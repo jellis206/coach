@@ -293,6 +293,7 @@ fn handle(stream: UnixStream, shared: &Shared) {
     };
     let mut reader = BufReader::new(stream);
     let mut line = Vec::new();
+    let mut peer: Option<String> = None;
     loop {
         line.clear();
         let n = match (&mut reader)
@@ -332,7 +333,27 @@ fn handle(stream: UnixStream, shared: &Shared) {
                         .fetch_add(1, Ordering::Relaxed);
                 }
             }
-            Ok(WireMessage::Event { event }) => {
+            Ok(WireMessage::RegisterPeer { .. }) => {
+                let owner = peer_pid(&writer).and_then(|pid| process::identify(pid).ok());
+                let registered = owner.is_some_and(|o| {
+                    peer = Some(o.instance_id.clone());
+                    shared
+                        .leases
+                        .lock()
+                        .unwrap()
+                        .register(o, now_ms() as u64, process::is_alive)
+                });
+                if !registered {
+                    shared
+                        .counters
+                        .rejected_registrations
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            Ok(WireMessage::Event { mut event }) => {
+                if event.process_instance_id == "peer" {
+                    event.process_instance_id = peer.clone().unwrap_or_else(|| "unknown".into());
+                }
                 shared.counters.received.fetch_add(1, Ordering::Relaxed);
                 shared.queue.push(*event, now_ms());
             }
@@ -348,6 +369,41 @@ fn handle(stream: UnixStream, shared: &Shared) {
                 }
             }
         }
+    }
+}
+
+/// PID of the process on the other end of a Unix socket, from kernel credentials.
+fn peer_pid(stream: &UnixStream) -> Option<u32> {
+    let fd = stream.as_raw_fd();
+    #[cfg(target_os = "macos")]
+    {
+        let mut pid: libc::pid_t = 0;
+        let mut len = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
+        let rc = unsafe {
+            libc::getsockopt(
+                fd,
+                libc::SOL_LOCAL,
+                libc::LOCAL_PEERPID,
+                (&raw mut pid).cast(),
+                &mut len,
+            )
+        };
+        (rc == 0 && pid > 0).then_some(pid as u32)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
+        let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+        let rc = unsafe {
+            libc::getsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_PEERCRED,
+                (&raw mut cred).cast(),
+                &mut len,
+            )
+        };
+        (rc == 0 && cred.pid > 0).then_some(cred.pid as u32)
     }
 }
 

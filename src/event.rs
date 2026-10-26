@@ -69,6 +69,12 @@ pub enum WireMessage {
         owner: ProcessIdentity,
         source: String,
     },
+    /// The connecting process registers itself; the daemon reads its PID from
+    /// socket credentials. Later events on this connection may say
+    /// `process_instance_id: "peer"`.
+    RegisterPeer {
+        source: String,
+    },
     Event {
         event: Box<EventEnvelope>,
     },

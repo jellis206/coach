@@ -548,6 +548,66 @@ fn sqlite_lock_is_reported_and_recovered() {
 }
 
 #[test]
+fn peer_registration_uses_socket_credentials() {
+    let env = env();
+    let mut d = start_daemon(&env);
+    let mut c = UnixStream::connect(env.state.join("coach.sock")).unwrap();
+    let me = process::identify(std::process::id()).unwrap();
+    let mut ev = event(&me, "peer-1", "prompt");
+    if let WireMessage::Event { event } = &mut ev {
+        event.process_instance_id = "peer".into();
+    }
+    for m in [
+        WireMessage::RegisterPeer {
+            source: "pi".into(),
+        },
+        ev,
+    ] {
+        let mut line = serde_json::to_vec(&m).unwrap();
+        line.push(b'\n');
+        c.write_all(&line).unwrap();
+    }
+    assert!(wait_until(Duration::from_secs(2), || doctor(&env)["store"]
+        ["events"]
+        == 1));
+    assert_eq!(doctor(&env)["daemon"]["leases"], 1);
+    let db = rusqlite::Connection::open(env.state.join("coach.db")).unwrap();
+    let id: String = db
+        .query_row("SELECT process_instance_id FROM events", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        id, me.instance_id,
+        "\"peer\" is replaced by the verified peer identity"
+    );
+    // A frame claiming "peer" on a connection that never registered stays unknown.
+    send(
+        &env,
+        &[event(
+            &ProcessIdentity {
+                pid: 1,
+                started_at: 0,
+                instance_id: "peer".into(),
+            },
+            "peer-2",
+            "prompt",
+        )],
+    );
+    assert!(wait_until(Duration::from_secs(2), || doctor(&env)["store"]
+        ["events"]
+        == 2));
+    let id: String = db
+        .query_row(
+            "SELECT process_instance_id FROM events WHERE event_id = 'peer-2'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(id, "unknown");
+    unsafe { libc::kill(d.id() as i32, libc::SIGTERM) };
+    d.wait().unwrap();
+}
+
+#[test]
 fn doctor_without_daemon_reports_not_running() {
     let env = env();
     let doc = doctor(&env);

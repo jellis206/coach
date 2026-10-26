@@ -66,7 +66,17 @@ Observed facts:
 - `tool_execution_end` has `toolCallId`, `toolName`, `isError` and `durationMs`, so failures are explicit.
 - `ctx.hasUI` was `false` in JSON print mode. Collection must not depend on the UI.
 - No subagent identity is exposed by Pi itself. Workers launched by a dispatcher need explicit `COACH_PARENT_AGENT_ID`, `COACH_RUN_ID` and `COACH_AGENT_ROLE` environment variables (Task 5/8).
-- `ui_prompt_start`/`ui_prompt_end` cannot fire headless. Their TUI behaviour, `/reload` and session switching are verified in Task 5.
+- `ui_prompt_start`/`ui_prompt_end` cannot fire headless. They carry no ID, so the adapter pairs them by nesting (LIFO) and labels an unmatched end `wait_id: null`. This is unit-tested only; no live TUI prompt has been triggered yet.
+
+### Pi adapter (`adapters/pi/index.ts`)
+
+- **Registration.** The adapter registers with `register_peer`. The daemon reads the connecting PID from socket credentials (macOS `LOCAL_PEERPID`, Linux `SO_PEERCRED`) and identifies it itself. Events on that connection say `process_instance_id: "peer"`, and the daemon substitutes the verified identity. Live headless and TUI runs matched `$!`.
+- **Kinds.** `input` becomes prompt. `tool_execution_end.isError` decides tool_failure or tool_result. `agent_settled` becomes idle. `session_shutdown` becomes session_end with Pi's `reason`.
+- **Nested tools.** `parentToolCallId` becomes `payload.parent_tool_call_id`, never `parent_agent_id`.
+- **Reload.** `/reload` produced `session_end(reload)` and then `session_start(reload)` from the same PID, with the lease kept (`leases: 1`). The adapter never unregisters; process liveness ends the lease.
+- **Launcher lineage.** The adapter sets `COACH_AGENT_ID=pi:<session id>` in its own process. A launcher passes that value to children as `COACH_PARENT_AGENT_ID`, plus `COACH_RUN_ID` and `COACH_AGENT_ROLE`. Values must match `^[\w.:@/-]{1,200}$`; anything else is recorded as unknown. This was verified live in `--mode json -p --no-session`.
+- **Transport.** One connection per runtime. The queue is bounded at 1024 frames, with a dropped-frame count. There is a single reconnect timer with backoff capped at 5 s, and at most one asynchronous `coach daemon` spawn. The socket is `unref`'d, so it never delays Pi's exit. Strings are cut at 16 Ki chars and arrays at 200 items before framing, and the daemon applies the byte caps again.
+- **Tested floor.** Pi 1.4.0, typechecked against its exported `ExtensionAPI` types.
 
 ## Codex
 
