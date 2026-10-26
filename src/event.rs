@@ -6,6 +6,8 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::process::ProcessIdentity;
+
 pub const SCHEMA_VERSION: u32 = 1;
 /// Largest accepted wire frame. Anything bigger is rejected before parsing.
 pub const MAX_FRAME_BYTES: usize = 512 * 1024;
@@ -58,6 +60,27 @@ pub struct EventEnvelope {
     pub capture_status: CaptureStatus,
 }
 
+/// One newline-delimited JSON frame on the local socket.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum WireMessage {
+    Register {
+        owner: ProcessIdentity,
+        source: String,
+    },
+    Event {
+        event: Box<EventEnvelope>,
+    },
+    Unregister {
+        instance_id: String,
+    },
+    Ping {
+        instance_id: String,
+    },
+    /// Ask for payload-free daemon counters; the daemon answers with one JSON line.
+    Status,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CaptureStatus {
     #[serde(default)]
@@ -103,6 +126,18 @@ pub fn decode_frame(bytes: &[u8]) -> Result<EventEnvelope, FrameError> {
     let mut event: EventEnvelope = serde_json::from_slice(bytes).map_err(FrameError::Malformed)?;
     event.sanitize();
     Ok(event)
+}
+
+/// Parse one wire message; events are sanitized before they leave this function.
+pub fn decode_message(bytes: &[u8]) -> Result<WireMessage, FrameError> {
+    if bytes.len() > MAX_FRAME_BYTES {
+        return Err(FrameError::TooLarge(bytes.len()));
+    }
+    let mut msg: WireMessage = serde_json::from_slice(bytes).map_err(FrameError::Malformed)?;
+    if let WireMessage::Event { event } = &mut msg {
+        event.sanitize();
+    }
+    Ok(msg)
 }
 
 // Key names whose string values are credentials regardless of content.

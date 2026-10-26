@@ -51,6 +51,10 @@ pub struct Diagnostics {
     pub oldest_received_ms: Option<i64>,
     pub newest_received_ms: Option<i64>,
     pub decisions: u64,
+    /// Daemon runs that ended without recording counters (crash/kill): their losses are uncounted.
+    pub unclean_daemon_exits: u64,
+    /// Dropped, rejected and failed-to-write events from cleanly finished runs.
+    pub recorded_losses: u64,
 }
 
 impl Store {
@@ -109,6 +113,14 @@ impl Store {
                     summary TEXT NOT NULL,
                     evidence_ids TEXT NOT NULL,
                     decided_at_ms INTEGER NOT NULL
+                );
+                CREATE TABLE daemon_runs (
+                    id INTEGER PRIMARY KEY,
+                    pid INTEGER NOT NULL,
+                    started_ms INTEGER NOT NULL,
+                    ended_ms INTEGER,
+                    unclean INTEGER NOT NULL DEFAULT 0,
+                    counters TEXT
                 );
                 PRAGMA user_version = 1;",
             )?;
@@ -225,7 +237,33 @@ impl Store {
             "SELECT COUNT(*) FROM events WHERE json_extract({status}, '$.unknown_kind')"
         ))?;
         d.decisions = count("SELECT COUNT(*) FROM decisions")?;
+        d.unclean_daemon_exits = count("SELECT COUNT(*) FROM daemon_runs WHERE unclean = 1")?;
+        d.recorded_losses = count(
+            "SELECT COALESCE(SUM(json_extract(counters, '$.dropped_queue_full') + json_extract(counters, '$.rejected_frames')
+               + json_extract(counters, '$.write_errors')), 0) FROM daemon_runs WHERE counters IS NOT NULL",
+        )?;
         Ok(d)
+    }
+
+    /// Record a daemon start; any earlier run still open ended uncleanly.
+    pub fn begin_run(&mut self, pid: u32, now_ms: i64) -> Result<i64> {
+        self.conn.execute(
+            "UPDATE daemon_runs SET unclean = 1 WHERE ended_ms IS NULL",
+            [],
+        )?;
+        self.conn.execute(
+            "INSERT INTO daemon_runs (pid, started_ms) VALUES (?1, ?2)",
+            params![pid, now_ms],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn end_run(&mut self, run_id: i64, now_ms: i64, counters: &impl Serialize) -> Result<()> {
+        self.conn.execute(
+            "UPDATE daemon_runs SET ended_ms = ?2, counters = ?3 WHERE id = ?1",
+            params![run_id, now_ms, serde_json::to_string(counters)?],
+        )?;
+        Ok(())
     }
 
     pub fn journal_mode(&self) -> Result<String> {
