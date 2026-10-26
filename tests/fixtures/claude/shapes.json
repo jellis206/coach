@@ -1,0 +1,315 @@
+{
+  "harness": "claude",
+  "version": "2.1.311",
+  "source": "Task 1 live synthetic probe; key names and value types only",
+  "events": {
+    "Notification": {
+      "deliveries": 1,
+      "shape": {
+        "session_id": "str",
+        "transcript_path": "str",
+        "cwd": "str",
+        "scratchpad_dir": "str",
+        "prompt_id": "str",
+        "hook_event_name": "str",
+        "message": "str",
+        "notification_type": "str"
+      },
+      "enums": {
+        "notification_type": [
+          "permission_prompt"
+        ]
+      }
+    },
+    "PermissionRequest": {
+      "deliveries": 1,
+      "shape": {
+        "session_id": "str",
+        "transcript_path": "str",
+        "cwd": "str",
+        "scratchpad_dir": "str",
+        "prompt_id": "str",
+        "permission_mode": "str",
+        "effort": {
+          "level": "str"
+        },
+        "hook_event_name": "str",
+        "tool_name": "str",
+        "tool_input": {
+          "command": "str",
+          "description": "str"
+        },
+        "permission_suggestions": "array"
+      },
+      "enums": {
+        "permission_mode": [
+          "default"
+        ],
+        "tool_name": [
+          "Bash"
+        ]
+      }
+    },
+    "PostToolUse": {
+      "deliveries": 3,
+      "shape": {
+        "session_id": "str",
+        "transcript_path": "str",
+        "cwd": "str",
+        "prompt_id": "str",
+        "permission_mode": "str",
+        "effort": {
+          "level": "str"
+        },
+        "hook_event_name": "str",
+        "tool_name": "str",
+        "tool_input": {
+          "command": "str",
+          "description": "str",
+          "prompt": "str",
+          "subagent_type": "str"
+        },
+        "tool_response": {
+          "stdout": "str",
+          "stderr": "str",
+          "interrupted": "bool",
+          "isImage": "bool",
+          "noOutputExpected": "bool",
+          "isAsync": "bool",
+          "status": "str",
+          "agentId": "str",
+          "description": "str",
+          "resolvedModel": "str",
+          "prompt": "str",
+          "outputFile": "str",
+          "canReadOutputFile": "bool",
+          "canContinueAgent": "bool"
+        },
+        "tool_use_id": "str",
+        "duration_ms": "int",
+        "agent_id": "str",
+        "agent_type": "str"
+      },
+      "enums": {
+        "agent_type": [
+          "general-purpose"
+        ],
+        "permission_mode": [
+          "bypassPermissions"
+        ],
+        "tool_name": [
+          "Agent",
+          "Bash"
+        ]
+      }
+    },
+    "PostToolUseFailure": {
+      "deliveries": 1,
+      "shape": {
+        "session_id": "str",
+        "transcript_path": "str",
+        "cwd": "str",
+        "prompt_id": "str",
+        "permission_mode": "str",
+        "effort": {
+          "level": "str"
+        },
+        "hook_event_name": "str",
+        "tool_name": "str",
+        "tool_input": {
+          "command": "str",
+          "description": "str"
+        },
+        "tool_use_id": "str",
+        "error": "str",
+        "is_interrupt": "bool",
+        "duration_ms": "int"
+      },
+      "enums": {
+        "is_interrupt": [
+          false
+        ],
+        "permission_mode": [
+          "bypassPermissions"
+        ],
+        "tool_name": [
+          "Bash"
+        ]
+      }
+    },
+    "PreToolUse": {
+      "deliveries": 5,
+      "shape": {
+        "session_id": "str",
+        "transcript_path": "str",
+        "cwd": "str",
+        "prompt_id": "str",
+        "permission_mode": "str",
+        "effort": {
+          "level": "str"
+        },
+        "hook_event_name": "str",
+        "tool_name": "str",
+        "tool_input": {
+          "command": "str",
+          "description": "str",
+          "prompt": "str",
+          "subagent_type": "str"
+        },
+        "tool_use_id": "str",
+        "agent_id": "str",
+        "agent_type": "str",
+        "scratchpad_dir": "str"
+      },
+      "enums": {
+        "agent_type": [
+          "general-purpose"
+        ],
+        "permission_mode": [
+          "bypassPermissions",
+          "default"
+        ],
+        "tool_name": [
+          "Agent",
+          "Bash"
+        ]
+      }
+    },
+    "SessionEnd": {
+      "deliveries": 3,
+      "shape": {
+        "session_id": "str",
+        "transcript_path": "str",
+        "cwd": "str",
+        "prompt_id": "str",
+        "hook_event_name": "str",
+        "reason": "str",
+        "scratchpad_dir": "str"
+      },
+      "enums": {
+        "reason": [
+          "clear",
+          "other",
+          "prompt_input_exit"
+        ]
+      }
+    },
+    "SessionStart": {
+      "deliveries": 3,
+      "shape": {
+        "session_id": "str",
+        "transcript_path": "str",
+        "cwd": "str",
+        "hook_event_name": "str",
+        "source": "str",
+        "scratchpad_dir": "str",
+        "model": "str"
+      },
+      "enums": {
+        "model": [
+          "claude-haiku-5-5"
+        ],
+        "source": [
+          "clear",
+          "startup"
+        ]
+      }
+    },
+    "Stop": {
+      "deliveries": 3,
+      "shape": {
+        "session_id": "str",
+        "transcript_path": "str",
+        "cwd": "str",
+        "prompt_id": "str",
+        "permission_mode": "str",
+        "effort": {
+          "level": "str"
+        },
+        "hook_event_name": "str",
+        "stop_hook_active": "bool",
+        "last_assistant_message": "str",
+        "background_tasks": "array",
+        "session_crons": "array",
+        "scratchpad_dir": "str"
+      },
+      "enums": {
+        "permission_mode": [
+          "bypassPermissions",
+          "default"
+        ],
+        "stop_hook_active": [
+          false
+        ]
+      }
+    },
+    "SubagentStart": {
+      "deliveries": 1,
+      "shape": {
+        "session_id": "str",
+        "transcript_path": "str",
+        "cwd": "str",
+        "prompt_id": "str",
+        "agent_id": "str",
+        "agent_type": "str",
+        "hook_event_name": "str"
+      },
+      "enums": {
+        "agent_type": [
+          "general-purpose"
+        ]
+      }
+    },
+    "SubagentStop": {
+      "deliveries": 1,
+      "shape": {
+        "session_id": "str",
+        "transcript_path": "str",
+        "cwd": "str",
+        "prompt_id": "str",
+        "permission_mode": "str",
+        "agent_id": "str",
+        "agent_type": "str",
+        "effort": {
+          "level": "str"
+        },
+        "hook_event_name": "str",
+        "stop_hook_active": "bool",
+        "agent_transcript_path": "str",
+        "last_assistant_message": "str",
+        "background_tasks": "array",
+        "session_crons": "array"
+      },
+      "enums": {
+        "agent_type": [
+          "general-purpose"
+        ],
+        "permission_mode": [
+          "bypassPermissions"
+        ],
+        "stop_hook_active": [
+          false
+        ]
+      }
+    },
+    "UserPromptSubmit": {
+      "deliveries": 4,
+      "shape": {
+        "session_id": "str",
+        "transcript_path": "str",
+        "cwd": "str",
+        "prompt_id": "str",
+        "permission_mode": "str",
+        "hook_event_name": "str",
+        "prompt": "str",
+        "scratchpad_dir": "str"
+      },
+      "enums": {
+        "permission_mode": [
+          "bypassPermissions",
+          "default"
+        ]
+      }
+    }
+  }
+}

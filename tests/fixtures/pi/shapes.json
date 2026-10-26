@@ -1,0 +1,190 @@
+{
+  "harness": "pi",
+  "version": "1.4.0",
+  "source": "Task 1 live synthetic probe; key names and value types only",
+  "events": {
+    "agent_end": {
+      "deliveries": 1,
+      "shape": {
+        "type": "string",
+        "messages": "array"
+      },
+      "enums": {}
+    },
+    "agent_settled": {
+      "deliveries": 1,
+      "shape": {
+        "type": "string",
+        "aborted": "boolean"
+      },
+      "enums": {}
+    },
+    "agent_start": {
+      "deliveries": 1,
+      "shape": {
+        "type": "string"
+      },
+      "enums": {}
+    },
+    "before_agent_start": {
+      "deliveries": 1,
+      "shape": {
+        "messageType": "string",
+        "prompt": "string",
+        "images": "undefined",
+        "type": "string",
+        "systemPromptOptions": {
+          "customPrompt": "undefined",
+          "forceSystemPrompt": "undefined",
+          "selectedTools": "array",
+          "hiddenTools": "array",
+          "toolSnippets": "object",
+          "toolGuidelines": "object",
+          "promptGuidelines": "array",
+          "appendSystemPrompt": "string",
+          "sections": "object",
+          "cwd": "string",
+          "contextFiles": "array",
+          "skills": "array"
+        },
+        "systemPrompt": "string"
+      },
+      "enums": {}
+    },
+    "input": {
+      "deliveries": 1,
+      "shape": {
+        "type": "string",
+        "text": "string",
+        "images": "undefined",
+        "source": "string",
+        "streamingBehavior": "undefined"
+      },
+      "enums": {}
+    },
+    "session_shutdown": {
+      "deliveries": 1,
+      "shape": {
+        "type": "string",
+        "reason": "string"
+      },
+      "enums": {}
+    },
+    "session_start": {
+      "deliveries": 1,
+      "shape": {
+        "type": "string",
+        "reason": "string"
+      },
+      "enums": {}
+    },
+    "tool_call": {
+      "deliveries": 2,
+      "shape": {
+        "type": "string",
+        "toolName": "string",
+        "toolCallId": "string",
+        "input": {
+          "command": "string"
+        }
+      },
+      "enums": {}
+    },
+    "tool_execution_end": {
+      "deliveries": 2,
+      "shape": {
+        "type": "string",
+        "toolCallId": "string",
+        "toolName": "string",
+        "result": {
+          "content": "array",
+          "details": "undefined",
+          "structuredContent": "object",
+          "isError": "boolean"
+        },
+        "isError": "boolean",
+        "durationMs": "number"
+      },
+      "enums": {}
+    },
+    "tool_execution_start": {
+      "deliveries": 2,
+      "shape": {
+        "type": "string",
+        "toolCallId": "string",
+        "toolName": "string",
+        "args": {
+          "command": "string",
+          "timeout": "object"
+        }
+      },
+      "enums": {}
+    },
+    "tool_result": {
+      "deliveries": 2,
+      "shape": {
+        "type": "string",
+        "toolName": "string",
+        "toolCallId": "string",
+        "input": {
+          "command": "string"
+        },
+        "content": "array",
+        "details": "undefined",
+        "structuredContent": {
+          "output": "string",
+          "truncated": "boolean",
+          "exit_code": "number",
+          "wall_time_seconds": "number"
+        },
+        "isError": "boolean",
+        "usage": "undefined"
+      },
+      "enums": {}
+    },
+    "turn_end": {
+      "deliveries": 3,
+      "shape": {
+        "type": "string",
+        "turnIndex": "number",
+        "message": {
+          "role": "string",
+          "content": "array",
+          "api": "string",
+          "provider": "string",
+          "model": "string",
+          "usage": "object",
+          "stopReason": "string",
+          "timestamp": "number",
+          "responseId": "string",
+          "rawStopReason": "string",
+          "durationMs": "number",
+          "thinkingLevel": "string"
+        },
+        "toolResults": "array",
+        "messageEntryId": "string",
+        "toolResultEntryIds": "array",
+        "outcome": "string",
+        "entries": "array",
+        "continue": "boolean",
+        "context": {
+          "contextEntries": "array",
+          "contextMessages": "array",
+          "llmMessages": "array",
+          "pendingMessages": "array",
+          "canContinue": "boolean"
+        }
+      },
+      "enums": {}
+    },
+    "turn_start": {
+      "deliveries": 3,
+      "shape": {
+        "type": "string",
+        "turnIndex": "number",
+        "timestamp": "number"
+      },
+      "enums": {}
+    }
+  }
+}
