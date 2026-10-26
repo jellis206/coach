@@ -1,12 +1,12 @@
 use std::io::Read;
 use std::process::ExitCode;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::{Value, json};
 
-use coach::daemon::{self, now_ms};
-use coach::event::{CaptureStatus, EventEnvelope, MAX_FRAME_BYTES, SCHEMA_VERSION, WireMessage};
+use coach::adapters::{self, Source};
+use coach::daemon;
+use coach::event::{EventEnvelope, MAX_FRAME_BYTES, Truncation, WireMessage};
 use coach::paths::Paths;
 use coach::process;
 use coach::store::Store;
@@ -49,6 +49,13 @@ impl Harness {
         }
     }
 
+    fn source(self) -> Source {
+        match self {
+            Harness::Claude => Source::Claude,
+            Harness::Codex => Source::Codex,
+        }
+    }
+
     /// Environment variable the harness sets to its own PID for hooks, if any.
     fn pid_hint(self) -> Option<&'static str> {
         match self {
@@ -79,49 +86,23 @@ fn main() -> ExitCode {
     }
 }
 
+/// Largest hook input parsed. More is drained and discarded so the harness never
+/// sees a broken pipe.
+const MAX_HOOK_INPUT: u64 = 16 * 1024 * 1024;
+
 fn hook(harness: Harness) {
     let mut raw = Vec::new();
-    let _ = std::io::stdin()
-        .take(MAX_FRAME_BYTES as u64 + 1)
-        .read_to_end(&mut raw);
+    let mut stdin = std::io::stdin().lock();
+    let _ = (&mut stdin).take(MAX_HOOK_INPUT).read_to_end(&mut raw);
+    let excess = std::io::copy(&mut stdin, &mut std::io::sink()).unwrap_or(0);
     let Ok(paths) = Paths::discover() else { return };
-    let mut status = CaptureStatus::default();
-    let payload = if raw.len() > MAX_FRAME_BYTES {
-        status.parse_error = true;
-        json!({"coach_oversize_bytes_at_least": raw.len()})
+    let input = if excess > 0 {
+        json!({"coach_oversize_input_bytes": raw.len() as u64 + excess})
     } else {
-        serde_json::from_slice(&raw).unwrap_or_else(|_| {
-            status.parse_error = true;
-            Value::Null
-        })
+        serde_json::from_slice(&raw).unwrap_or(Value::Null)
     };
     let owner = process::hook_owner(harness.pid_hint());
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos() as u64);
-    let event = EventEnvelope {
-        schema_version: SCHEMA_VERSION,
-        event_id: format!("{}-{}-{nanos:x}", harness.name(), std::process::id()),
-        process_instance_id: owner
-            .as_ref()
-            .map_or_else(|| "unknown".into(), |o| o.instance_id.clone()),
-        session_id: payload
-            .get("session_id")
-            .and_then(Value::as_str)
-            .map(Into::into),
-        agent_id: None,
-        parent_agent_id: None,
-        turn_id: None,
-        tool_call_id: None,
-        source: harness.name().into(),
-        source_version: None,
-        kind: "unknown".into(),
-        occurred_at_ms: now_ms(),
-        sequence: nanos,
-        payload,
-        capture_status: status,
-    };
-    let Some(mut stream) = daemon::connect_or_spawn(&paths) else {
+    let Ok(events) = adapters::normalize(harness.source(), input, owner.as_ref()) else {
         return;
     };
     let mut messages = Vec::new();
@@ -131,10 +112,34 @@ fn hook(harness: Harness) {
             source: harness.name().into(),
         });
     }
-    messages.push(WireMessage::Event {
-        event: Box::new(event),
-    });
+    messages.extend(events.into_iter().map(|e| WireMessage::Event {
+        event: Box::new(fit_frame(e)),
+    }));
+    let Some(mut stream) = daemon::connect_or_spawn(&paths) else {
+        return;
+    };
     let _ = daemon::send(&mut stream, &messages);
+}
+
+/// Fields are already capped; if the frame is still too big, keep the identity
+/// and the source key names, drop the raw values, and say so.
+fn fit_frame(mut e: EventEnvelope) -> EventEnvelope {
+    let size = serde_json::to_vec(&WireMessage::Event {
+        event: Box::new(e.clone()),
+    })
+    .map_or(usize::MAX, |v| v.len());
+    if size > MAX_FRAME_BYTES {
+        let keys: Vec<String> = e.payload["raw"]
+            .as_object()
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or_default();
+        e.payload["raw"] = json!({"coach_degraded": "frame_too_large", "keys": keys});
+        e.capture_status.truncated.push(Truncation {
+            path: "/raw".into(),
+            original_bytes: size,
+        });
+    }
+    e
 }
 
 fn doctor(as_json: bool) -> ExitCode {

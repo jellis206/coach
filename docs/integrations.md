@@ -75,7 +75,45 @@ Observed facts:
 - Installation must tell users to trust hooks through Codex's own review flow. Coach must never write `trusted_hash` itself or inject hooks with `-c`.
 - `coach doctor` must report "registered but no events received" for Codex, so that a silently skipped hook is visible.
 
-Live ownership and payload shapes for Codex are pending a user-approved trust of the scratch probe project.
+Live ownership and payload shapes for Codex are pending a user-approved trust of the scratch probe project. Until then, the Codex adapter is built from the **documented** input structs in the pinned `rust-v0.164.0` `codex-rs/hooks/src/schema.rs`, which have not been observed live:
+
+- Every event has `session_id`, `cwd`, `hook_event_name` and a nullable `transcript_path`. Turn-scoped events add `turn_id`, `model` and `permission_mode`.
+- Tool events (`PreToolUse`, `PostToolUse`) carry `tool_name`, `tool_input` and `tool_use_id`, plus optional `agent_id`/`agent_type`. `PermissionRequest` has `tool_name` and `tool_input` but **no `tool_use_id`**.
+- `PostToolUse.tool_response` is an untyped JSON value. There is no failure event.
+- `SessionEnd.reason` has the single documented value `other`. `SessionStart.source` is a string.
+- Other inputs: `SubagentStart`/`SubagentStop` (required `agent_id`/`agent_type`), `Stop`, `Interrupt`, `PreCompact`/`PostCompact` (`trigger`) and `UserPromptSubmit` (`prompt`).
+
+## Hook delivery mode (Claude Code 2.1.311)
+
+- `"async": true` on a command hook is accepted, and events arrive with the same owner (`$!`) and parent.
+- **With `async: true`, `Stop` was never delivered** in two `-p` runs; with sync it was delivered both times. `SessionEnd` was still delivered async.
+- Coach therefore registers `Stop` and `SubagentStop` synchronously and every other event async.
+- Async hooks take Coach's process startup off the agent's critical path for most events. Measured hook cost: see the ledger and `docs/validation.md`.
+- In `-p` mode, a settings file that fails validation is silently ignored. "Zero events" can therefore mean a rejected configuration; `coach doctor` must say so.
+
+## Normalization rules
+
+The envelope's `payload` is `{source_event, raw, …interpretation}`. `raw` is the sanitized source payload. The interpretation fields record what Coach concluded and why.
+
+| Source event | Kind | Notes |
+|---|---|---|
+| SessionStart / SessionEnd | session_start / session_end | Conversation lifecycle, not process lifecycle. |
+| UserPromptSubmit | prompt | Claude `prompt_id` or Codex `turn_id` becomes `turn_id`. |
+| PreToolUse | tool_start | `tool_use_id` becomes `tool_call_id`. A shell segment that itself runs `gh pr merge`, `git merge` or `gh pr review --approve` also emits `wrap_up_candidate` with `basis=command_text, remote_state=unverified`. |
+| PostToolUse | tool_result | Claude: `outcome=success`, because failures have their own event. Codex: `error`/`success` only from an explicit `exit_code` or `success` field, otherwise `unknown`. |
+| PostToolUseFailure (Claude) | tool_failure | `is_interrupt` distinguishes `interrupted` from `error`. |
+| PermissionRequest | approval_request | No `tool_call_id` (`tool_call_link=approximate`). No outcome or wait duration is ever recorded. A denied call produces no result event, and none is synthesized. |
+| Notification (Claude) | notification | `permission_prompt` is not a wait start or end. |
+| Stop | idle | Never completion or wrap-up. |
+| SubagentStart / SubagentStop | subagent_start / subagent_stop | `agent_id` from the payload. |
+| Interrupt / Pre/PostCompact (Codex) | interrupt / compaction | |
+| anything else | unknown | `capture_status.unknown_kind`; source name kept in `source_event`. |
+
+Additional rules:
+
+- **Event IDs and deduplication.** Tool events use `source:session:event:tool_use_id`, so a duplicated hook delivery is stored once. Every other event gets a unique per-delivery ID. Two `Stop`s in one prompt are real (async subagent re-entry) and are never collapsed.
+- **Parent agent.** Hook payloads never name a parent. `parent_agent_id` comes only from an explicit launcher's `COACH_PARENT_AGENT_ID`.
+- **Bounding.** The hook drains all of stdin (parsing at most 16 MiB) and cuts fields at 64 KiB with truncation notes. If a frame still exceeds 512 KiB, it replaces `raw` with its key names and keeps the identity fields. The event is never dropped.
 
 ## Linux coverage
 

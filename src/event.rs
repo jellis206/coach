@@ -30,7 +30,8 @@ pub const KNOWN_KINDS: &[&str] = &[
     "idle",
     "wrap_up_candidate",
     "notification",
-    "unknown",
+    "interrupt",
+    "compaction",
 ];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

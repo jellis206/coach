@@ -1,3 +1,4 @@
+pub mod adapters;
 pub mod daemon;
 pub mod event;
 pub mod paths;
