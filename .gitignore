@@ -1,0 +1,21 @@
+# Build and tool caches
+/target/
+node_modules/
+__pycache__/
+*.pyc
+
+# Coach evidence must never live in a checkout
+*.sqlite
+*.sqlite3
+*.db
+*.db-wal
+*.db-shm
+*-wal
+*-shm
+/evidence/
+/exports/
+/debriefs/
+*.coach-export.*
+
+# Execution scratch
+/.superpowers/
