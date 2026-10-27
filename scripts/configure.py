@@ -214,7 +214,7 @@ def pi(home, action, bin_path, dry_run, allow_managed):
         target.mkdir(exist_ok=True)
         write_atomic(target / "index.ts", PI_SOURCE.read_text(), dry_run)
         (target / MARKER).write_text("installed by coach scripts/configure.py\n")
-    note = "" if shutil.which("coach") == bin_path else f" (coach is not first on PATH: set COACH_BIN={bin_path} for Pi)"
+    note = "" if shutil.which("coach") == os.path.expandvars(bin_path) else f" (coach is not first on PATH: set COACH_BIN={bin_path} for Pi)"
     return [f"install {target}/index.ts; Pi finds the binary on PATH or via COACH_BIN{note}", "run /reload in open Pi sessions"]
 
 
@@ -226,13 +226,14 @@ def main():
     ap.add_argument("action", choices=["install", "remove"])
     ap.add_argument("--harness", choices=[*HARNESSES, "all"], required=True)
     ap.add_argument("--home", type=Path, default=Path.home())
-    ap.add_argument("--coach-bin", help="absolute path of the coach binary (default: from PATH)")
+    ap.add_argument("--coach-bin", help="absolute or $HOME/-relative path of the coach binary (default: from PATH)")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--allow-managed", action="store_true", help="write config that lives in a Git checkout (e.g. dotfiles)")
     args = ap.parse_args()
 
     bin_path = args.coach_bin or shutil.which("coach")
-    if args.action == "install" and (not bin_path or not os.path.isabs(bin_path)):
+    # `$HOME/...` keeps shared (dotfiles) config portable; harnesses run hook commands through a shell.
+    if args.action == "install" and (not bin_path or not os.path.isabs(bin_path.replace("$HOME/", "/", 1))):
         print("coach: binary not found; install it first or pass --coach-bin /absolute/path", file=sys.stderr)
         return 2
     names = list(HARNESSES) if args.harness == "all" else [args.harness]

@@ -16,10 +16,10 @@ SAFETY = {
 }
 
 
-def run(home, *args, env=None):
+def run(home, *args, env=None, bin=BIN):
     e = {**os.environ, "HOME": str(home), "CODEX_HOME": str(home / ".codex"), **(env or {})}
     return subprocess.run(
-        [sys.executable, "-I", str(CONFIGURE), *args, "--home", str(home), "--coach-bin", BIN],
+        [sys.executable, "-I", str(CONFIGURE), *args, "--home", str(home), "--coach-bin", bin],
         capture_output=True, text=True, env=e,
     )
 
@@ -116,6 +116,14 @@ class Claude(Base):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertTrue(coach_hooks(json.loads((repo / ".claude" / "settings.json").read_text())))
         self.assertFalse(list((repo / ".claude").glob("*.coach-backup-*")), "no backup litter inside a repo; Git is the backup")
+
+    def test_home_relative_binary_for_shared_config(self):
+        p = self.claude_settings({})
+        r = run(self.home, "install", "--harness", "claude", bin="$HOME/.local/bin/coach")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        commands = {h["command"] for g in json.loads(p.read_text())["hooks"]["Stop"] for h in g["hooks"]}
+        self.assertEqual(commands, {"$HOME/.local/bin/coach hook claude"})
+        self.assertNotEqual(run(self.home, "install", "--harness", "claude", bin="coach").returncode, 0)
 
     def test_dry_run_changes_nothing(self):
         p = self.claude_settings({"hooks": SAFETY})
