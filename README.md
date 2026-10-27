@@ -90,7 +90,8 @@ A debrief of the parent session includes its known descendants.
 - **Codex trust.** Codex skips untrusted hooks without saying so. `registered_no_events` means the hooks are configured but nothing has arrived yet. `registered` means events from that harness are in the store.
 - **Killed sessions.** A harness killed with SIGKILL sends no session end. The daemon notices through liveness checks.
 - **Unattributed events.** Hook events whose owner process cannot be verified are recorded with an `unknown` owner, and the debrief's coverage line counts them.
-- **Platforms.** Linux ownership and peer credentials are covered by tests. Live harness checks were run on macOS. See [docs/integrations.md](docs/integrations.md).
+- **Platforms.** Linux ownership and peer credentials are covered by tests. Live harness checks were run on macOS with Claude Code 2.1.312, Codex 0.164.0 and Pi 1.4.0. Versions, measurements and gaps are in [docs/validation.md](docs/validation.md), and harness contracts in [docs/integrations.md](docs/integrations.md).
+- **Overhead.** A warm hook takes about 4.5 ms at the median and 5 ms at the 95th percentile, mostly process startup. Claude Code runs every Coach hook except Stop and SubagentStop asynchronously.
 
 ## Onboarding checklist
 

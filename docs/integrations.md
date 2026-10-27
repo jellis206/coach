@@ -16,7 +16,7 @@ Raw probe output stays in a private directory outside any checkout. `tests/fixtu
 |---|---|---|---|
 | Claude Code 2.1.311 | The `claude` process itself. No shell wrapper was observed between harness and hook. | Nearest non-shell ancestor. Claude also exports `CLAUDE_PID` = owner PID to hooks. | 18/18 headless and 10/10 interactive deliveries matched `$!` PID and start time. |
 | Pi 1.4.0 | Not applicable: extensions run in the Pi process. | `process.pid`. | 21/21 deliveries in `--mode json -p --no-session` matched `$!`. |
-| Codex 0.164.0 | Pending live probe. | Pending. | Not verified. See [Codex](#codex). |
+| Codex 0.164.0 | Verified only through Coach's own attribution. | Nearest non-shell ancestor. | 6/6 events from one `codex exec` were attributed to a single owner process, with none unknown. See [Codex](#codex). |
 
 Rules the daemon must follow:
 
@@ -85,7 +85,7 @@ Observed facts:
 - Installation must tell users to trust hooks through Codex's own review flow. Coach must never write `trusted_hash` itself or inject hooks with `-c`.
 - `coach doctor` must report "registered but no events received" for Codex, so that a silently skipped hook is visible.
 
-Live ownership and payload shapes for Codex are pending a user-approved trust of the scratch probe project. Until then, the Codex adapter is built from the **documented** input structs in the pinned `rust-v0.164.0` `codex-rs/hooks/src/schema.rs`, which have not been observed live:
+The Codex adapter is built from the **documented** input structs in the pinned `rust-v0.164.0` `codex-rs/hooks/src/schema.rs`. Once the user had trusted the hooks, a live `codex exec` delivered `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop` and `SessionEnd` with exactly these keys. None was a parse error or an unknown kind. `PermissionRequest`, the subagent events, `Interrupt` and the compaction events have not been observed live:
 
 - Every event has `session_id`, `cwd`, `hook_event_name` and a nullable `transcript_path`. Turn-scoped events add `turn_id`, `model` and `permission_mode`.
 - Tool events (`PreToolUse`, `PostToolUse`) carry `tool_name`, `tool_input` and `tool_use_id`, plus optional `agent_id`/`agent_type`. `PermissionRequest` has `tool_name` and `tool_input` but **no `tool_use_id`**.
@@ -127,8 +127,8 @@ Additional rules:
 
 ## Linux coverage
 
-There has been no live Linux run yet. Planned coverage:
+There has been no live Linux harness run. Coverage:
 
 - Process identity from `/proc/<pid>/stat` field 22 (start time in clock ticks since boot), via `sysinfo`, compared with PID.
-- CI on Ubuntu runs the owner/liveness unit tests with a synthetic hook chain (`sh -c` → probe) to check that shells are skipped.
-- A live Linux harness probe is a Task 9 item. Until it runs, README claims for Linux are limited to "unit-tested".
+- CI on Ubuntu runs the owner, liveness and `SO_PEERCRED` tests, including a synthetic hook chain (`sh -c` → probe) that checks shells are skipped.
+- README claims for Linux are limited to "unit-tested". See [validation.md](validation.md).
