@@ -448,6 +448,8 @@ fn hook_starts_daemon_and_reconnects_after_crash() {
 fn hook_is_fail_open_and_silent_when_state_is_unusable() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir(dir.path().join(".git")).unwrap();
+    // macOS scans a freshly linked binary on first exec; time Coach, not that.
+    Command::new(BIN).arg("--version").output().unwrap();
     let start = Instant::now();
     let mut c = Command::new(BIN)
         .args(["hook", "claude"])
