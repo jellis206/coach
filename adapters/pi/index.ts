@@ -2,11 +2,12 @@
 // over its Unix socket. Never blocks, mutates, or answers for the agent.
 //
 // Launcher lineage contract (environment, all optional):
-//   COACH_PARENT_AGENT_ID  agent id of the launching agent (from its COACH_AGENT_ID)
+//   COACH_PARENT_AGENT_ID  the launching agent's id or session id
 //   COACH_RUN_ID           dispatcher run/batch id
 //   COACH_AGENT_ROLE       e.g. worker, validator
-// This extension sets COACH_AGENT_ID for its own process at session start so a
-// launcher can pass it to children explicitly.
+// This extension sets COACH_AGENT_ID for its own process at session start so an
+// in-process launcher (another extension) can pass it to children. Pi's bash tool
+// snapshots its environment earlier, so shell launches use $PI_SESSION_ID instead.
 import { execFile, spawn } from "node:child_process";
 import { createConnection, type Socket } from "node:net";
 import { homedir } from "node:os";

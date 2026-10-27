@@ -68,8 +68,8 @@ Coach does not discover arbitrary subagents.
 
 | Variable | Set by | Meaning |
 | --- | --- | --- |
-| `COACH_AGENT_ID` | the Pi extension, for its own process | this agent's id; pass it to children as `COACH_PARENT_AGENT_ID` |
-| `COACH_PARENT_AGENT_ID` | your launcher | the parent's agent id, or its session id when the parent has no agent id (top-level Claude Code and Codex sessions) |
+| `COACH_PARENT_AGENT_ID` | your launcher | the parent's session id (`$CLAUDE_CODE_SESSION_ID` in Claude Code, `$PI_SESSION_ID` in Pi's bash tool), or its agent id |
+| `COACH_AGENT_ID` | the Pi extension, in Pi's own process | this agent's id (`pi:<session id>`), for launchers running inside Pi such as extensions. Pi's bash tool does not see it; use `$PI_SESSION_ID` there |
 | `COACH_RUN_ID` | your launcher | a dispatcher run or batch id (recorded by Pi) |
 | `COACH_AGENT_ROLE` | your launcher | for example `worker` or `validator` (recorded by Pi) |
 
@@ -116,7 +116,7 @@ Run these checks in a scratch directory outside every repository, for example `m
 
 5. **Headless child.** From the same session, launch one child that names its parent:
    - **Claude Code:** `COACH_PARENT_AGENT_ID=$CLAUDE_CODE_SESSION_ID claude -p "run: ls /coach-onboarding-child-missing"`
-   - **Pi:** `COACH_PARENT_AGENT_ID=$COACH_AGENT_ID pi -p "run: ls /coach-onboarding-child-missing"`
+   - **Pi:** `COACH_PARENT_AGENT_ID=$PI_SESSION_ID pi -p "run: ls /coach-onboarding-child-missing"`
 
    The child keeps its normal permission settings.
 
