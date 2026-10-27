@@ -374,7 +374,7 @@ const COVERAGE_LIMITS: &[&str] = &[
     "harness restarts or /reload are needed before new hooks or extensions load",
     "subagents are linked only when the harness reports them or a launcher sets COACH_PARENT_AGENT_ID",
     "COACH_PARENT_AGENT_ID is inherited: a grandchild started without its own lineage is recorded under the original parent",
-    "hook events whose owner process cannot be verified are recorded with an unknown owner",
+    "hook events whose owner process cannot be verified are recorded with an unknown owner; Claude's async SessionEnd usually runs after Claude exits, so one unknown event per Claude session is expected",
     "a killed harness sends no session end; the daemon notices via liveness checks",
 ];
 

@@ -57,6 +57,8 @@ All live runs used a scratch directory, synthetic prompts and normal approval se
 - **Codex.** After the user trusted the hooks, one `codex exec` recorded `session_start`, `prompt`, `tool_start`, `tool_result`, `idle` and `session_end`. All six were attributed to the Codex process, with none unknown.
 - **Wrap-up debrief.** A real session debrief produced 3 candidates. The user accepted the repeated-approval finding with a reference and dismissed the other two. A new debrief read the decisions back.
 
+- **After the v0.1.0 install.** A `codex exec` and two `claude -p` probes were attributed to their own harness process for every event except Claude's `SessionEnd`. That hook runs asynchronously and usually after Claude has exited, so it is recorded with an unknown owner and its session id.
+
 ## Known gaps
 
 - Hook p95 is just above the 5 ms target. See [Overhead](#overhead).
