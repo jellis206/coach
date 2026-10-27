@@ -16,7 +16,10 @@ pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + S
 
 pub const RETENTION_MS: i64 = 30 * 86_400_000;
 pub const MAX_SUMMARY_BYTES: usize = 4096;
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
+/// Upper bound on events loaded for one debrief.
+pub const MAX_DEBRIEF_EVENTS: i64 = 50_000;
+const MAX_LINEAGE_DEPTH: usize = 8;
 
 pub struct Store {
     conn: Connection,
@@ -38,6 +41,17 @@ pub struct Decision {
     pub reference: Option<String>,
     pub summary: String,
     pub evidence_ids: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SessionSummary {
+    pub session_id: String,
+    pub sources: String,
+    pub events: u64,
+    pub first_ms: i64,
+    pub last_ms: i64,
+    /// Some event in this session names an explicit parent agent.
+    pub has_parent: bool,
 }
 
 /// Payload-free health counters.
@@ -123,6 +137,21 @@ impl Store {
                     counters TEXT
                 );
                 PRAGMA user_version = 1;",
+            )?;
+            tx.commit()?;
+        }
+        if version < 2 {
+            let tx = self.conn.transaction()?;
+            tx.execute_batch(
+                "CREATE TABLE debrief_runs (
+                    id INTEGER PRIMARY KEY,
+                    selection TEXT NOT NULL,
+                    cutoff_ms INTEGER NOT NULL,
+                    findings TEXT NOT NULL,
+                    created_ms INTEGER NOT NULL
+                );
+                CREATE INDEX debrief_runs_selection ON debrief_runs(selection, id);
+                PRAGMA user_version = 2;",
             )?;
             tx.commit()?;
         }
@@ -264,6 +293,123 @@ impl Store {
             params![run_id, now_ms, serde_json::to_string(counters)?],
         )?;
         Ok(())
+    }
+
+    /// The selected sessions plus sessions whose events name an agent of an
+    /// already-included session as their explicit parent. Sorted.
+    pub fn sessions_with_descendants(&self, roots: &[String]) -> Result<Vec<String>> {
+        let mut included: std::collections::BTreeSet<String> = roots.iter().cloned().collect();
+        for _ in 0..MAX_LINEAGE_DEPTH {
+            let set = serde_json::to_string(&included)?;
+            let mut stmt = self.conn.prepare(
+                "SELECT DISTINCT session_id FROM events WHERE session_id IS NOT NULL AND parent_agent_id IN (
+                   SELECT agent_id FROM events WHERE agent_id IS NOT NULL
+                     AND session_id IN (SELECT value FROM json_each(?1)))",
+            )?;
+            let found: Vec<String> = stmt
+                .query_map([&set], |r| r.get(0))?
+                .collect::<std::result::Result<_, _>>()?;
+            let before = included.len();
+            included.extend(found);
+            if included.len() == before {
+                break;
+            }
+        }
+        Ok(included.into_iter().collect())
+    }
+
+    /// Events of the given sessions with their receipt time, in occurrence order.
+    pub fn events_for(&self, sessions: &[String]) -> Result<Vec<(EventEnvelope, i64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT envelope, received_at_ms FROM events WHERE session_id IN (SELECT value FROM json_each(?1))
+             ORDER BY occurred_at_ms, json_extract(envelope, '$.sequence') LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(
+            params![serde_json::to_string(sessions)?, MAX_DEBRIEF_EVENTS],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+        )?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (json, received) = row?;
+            out.push((serde_json::from_str(&json)?, received));
+        }
+        Ok(out)
+    }
+
+    pub fn exists(&self, event_id: &str) -> Result<bool> {
+        Ok(self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM events WHERE event_id = ?1)",
+            [event_id],
+            |r| r.get(0),
+        )?)
+    }
+
+    pub fn sessions(&self) -> Result<Vec<SessionSummary>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT session_id, group_concat(DISTINCT source), COUNT(*), MIN(occurred_at_ms), MAX(occurred_at_ms),
+                    MAX(parent_agent_id IS NOT NULL)
+             FROM events WHERE session_id IS NOT NULL GROUP BY session_id ORDER BY MAX(occurred_at_ms) DESC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(SessionSummary {
+                session_id: r.get(0)?,
+                sources: r.get(1)?,
+                events: r.get::<_, i64>(2)? as u64,
+                first_ms: r.get(3)?,
+                last_ms: r.get(4)?,
+                has_parent: r.get::<_, i64>(5)? == 1,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// Latest recorded debrief for a selection key: (cutoff_ms, findings JSON).
+    pub fn last_debrief(&self, selection: &str) -> Result<Option<(i64, String)>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT cutoff_ms, findings FROM debrief_runs WHERE selection = ?1 ORDER BY id DESC LIMIT 1",
+                [selection],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?)
+    }
+
+    pub fn record_debrief(
+        &mut self,
+        selection: &str,
+        cutoff_ms: i64,
+        findings_json: &str,
+        now_ms: i64,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO debrief_runs (selection, cutoff_ms, findings, created_ms) VALUES (?1, ?2, ?3, ?4)",
+            params![selection, cutoff_ms, findings_json, now_ms],
+        )?;
+        Ok(())
+    }
+
+    /// Findings JSON of the most recent debrief that mentions `finding_id`.
+    pub fn debrief_mentioning(&self, finding_id: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT findings FROM debrief_runs WHERE EXISTS (
+                   SELECT 1 FROM json_each(findings) WHERE json_extract(value, '$.id') = ?1)
+                 ORDER BY id DESC LIMIT 1",
+                [finding_id],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    /// Received time of the newest event of `kind` among `sessions`.
+    pub fn newest_of_kind(&self, sessions: &[String], kind: &str) -> Result<Option<i64>> {
+        Ok(self.conn.query_row(
+            "SELECT MAX(received_at_ms) FROM events WHERE kind = ?2 AND session_id IN (SELECT value FROM json_each(?1))",
+            params![serde_json::to_string(sessions)?, kind],
+            |r| r.get(0),
+        )?)
     }
 
     pub fn journal_mode(&self) -> Result<String> {

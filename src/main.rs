@@ -1,15 +1,16 @@
-use std::io::Read;
+use std::io::{Read, Write};
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::{Value, json};
 
 use coach::adapters::{self, Source};
-use coach::daemon;
 use coach::event::{EventEnvelope, MAX_FRAME_BYTES, Truncation, WireMessage};
-use coach::paths::Paths;
-use coach::process;
-use coach::store::Store;
+use coach::paths::{self, Paths};
+use coach::store::{Decision, DecisionKind, Store};
+use coach::{daemon, debrief, process};
 
 #[derive(Parser)]
 #[command(
@@ -33,6 +34,56 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Review recurring friction for sessions and their known descendants.
+    Debrief {
+        #[arg(long = "session", required = true)]
+        sessions: Vec<String>,
+        #[arg(long)]
+        json: bool,
+        /// Print nothing unless a wrap-up candidate arrived since the last debrief.
+        #[arg(long)]
+        if_ready: bool,
+    },
+    /// List recorded sessions (no captured content).
+    Sessions {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show one captured event in full. This prints private content.
+    Evidence {
+        event_id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Write a session's events as JSONL to a new private file outside Git.
+    Export {
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Delete detailed evidence received before a date (YYYY-MM-DD, UTC).
+    Purge {
+        #[arg(long)]
+        before: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Record a decision on a finding from a debrief.
+    Finding {
+        #[arg(value_enum)]
+        decision: DecisionArg,
+        finding_id: String,
+        /// Where the approved general improvement lives (skill, doc, commit).
+        #[arg(long)]
+        reference: Option<String>,
+    },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum DecisionArg {
+    Accept,
+    Dismiss,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -83,7 +134,173 @@ fn main() -> ExitCode {
             }
         },
         Cmd::Doctor { json } => doctor(json),
+        cmd => match run(cmd) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("coach: {e}");
+                ExitCode::FAILURE
+            }
+        },
     }
+}
+
+type BoxResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
+
+fn run(cmd: Cmd) -> BoxResult<()> {
+    let paths = Paths::discover()?;
+    let mut store = Store::open(&paths.db)?;
+    match cmd {
+        Cmd::Debrief {
+            sessions,
+            json,
+            if_ready,
+        } => {
+            if if_ready && !debrief::wrap_up_ready(&store, &sessions)? {
+                return Ok(());
+            }
+            let d = debrief::debrief(&mut store, &sessions, daemon::now_ms())?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&d)?);
+            } else {
+                print!("{}", debrief::render_markdown(&d));
+            }
+        }
+        Cmd::Sessions { json } => {
+            let sessions = store.sessions()?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&sessions)?);
+            } else {
+                for s in sessions {
+                    println!(
+                        "{}  {}  {} events{}",
+                        s.session_id,
+                        s.sources,
+                        s.events,
+                        if s.has_parent { "  (child)" } else { "" }
+                    );
+                }
+            }
+        }
+        Cmd::Evidence { event_id, json } => {
+            let e = store
+                .get(&event_id)?
+                .ok_or_else(|| format!("event {event_id} was purged or never recorded"))?;
+            println!(
+                "{}",
+                if json {
+                    serde_json::to_string(&e)?
+                } else {
+                    serde_json::to_string_pretty(&e)?
+                }
+            );
+        }
+        Cmd::Export { session, output } => export(&store, &session, &output)?,
+        Cmd::Purge { before, yes } => {
+            let cutoff =
+                parse_date_ms(&before).ok_or("--before must be a valid YYYY-MM-DD date")?;
+            if !yes {
+                return Err("purge deletes evidence permanently; pass --yes to confirm".into());
+            }
+            let n = store.prune(cutoff)?;
+            println!("purged {n} event(s); decisions and summaries were kept");
+        }
+        Cmd::Finding {
+            decision,
+            finding_id,
+            reference,
+        } => {
+            let (summary, evidence_ids) = debrief::decision_summary(&store, &finding_id)?
+                .ok_or_else(|| {
+                    format!("finding {finding_id} is not in any debrief; run `coach debrief` first")
+                })?;
+            let kind = match decision {
+                DecisionArg::Accept => DecisionKind::Accepted,
+                DecisionArg::Dismiss => DecisionKind::Dismissed,
+            };
+            store.decide(
+                &Decision {
+                    finding_id: finding_id.clone(),
+                    kind,
+                    reference,
+                    summary,
+                    evidence_ids,
+                },
+                daemon::now_ms(),
+            )?;
+            println!("recorded {kind:?} for {finding_id}");
+        }
+        Cmd::Hook { .. } | Cmd::Daemon | Cmd::Doctor { .. } => unreachable!("handled in main"),
+    }
+    Ok(())
+}
+
+fn export(store: &Store, session: &str, output: &Path) -> BoxResult<()> {
+    let parent = output
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    if let Some(repo) = paths::enclosing_git_root(parent) {
+        return Err(format!(
+            "refusing to export evidence into Git worktree {}",
+            repo.display()
+        )
+        .into());
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(output)
+        .map_err(|e| {
+            format!(
+                "cannot create {} (it must not exist): {e}",
+                output.display()
+            )
+        })?;
+    for (e, _) in store.events_for(&[session.to_string()])? {
+        serde_json::to_writer(&mut file, &e)?;
+        file.write_all(b"\n")?;
+    }
+    Ok(())
+}
+
+/// UTC midnight of a strict `YYYY-MM-DD` date, in epoch milliseconds.
+fn parse_date_ms(s: &str) -> Option<i64> {
+    let b = s.as_bytes();
+    if b.len() != 10 || b[4] != b'-' || b[7] != b'-' {
+        return None;
+    }
+    let (y, m, d): (i64, i64, i64) = (
+        s[0..4].parse().ok()?,
+        s[5..7].parse().ok()?,
+        s[8..10].parse().ok()?,
+    );
+    let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    let days_in_month = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    if !(1..=12).contains(&m) || d < 1 || d > days_in_month[(m - 1) as usize] {
+        return None;
+    }
+    // Howard Hinnant's days_from_civil.
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    Some((era * 146_097 + doe - 719_468) * 86_400_000)
 }
 
 /// Largest hook input parsed. More is drained and discarded so the harness never

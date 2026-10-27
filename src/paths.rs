@@ -77,7 +77,7 @@ pub fn ensure_private_dir(dir: &Path) -> Result<PathBuf> {
 }
 
 /// Walk up from `path` (or its nearest existing ancestor, canonicalized) looking for `.git`.
-fn enclosing_git_root(path: &Path) -> Option<PathBuf> {
+pub fn enclosing_git_root(path: &Path) -> Option<PathBuf> {
     let mut probe = path.to_path_buf();
     while !probe.exists() {
         probe = probe.parent()?.to_path_buf();

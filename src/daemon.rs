@@ -226,6 +226,7 @@ pub fn run(paths: &Paths) -> BoxResult<()> {
 
     let mut store = Store::open(&paths.db)?;
     let run_id = store.begin_run(std::process::id(), now_ms())?;
+    store.prune(now_ms() - crate::store::RETENTION_MS)?;
     let (queue, rx) = EventQueue::bounded(QUEUE_CAPACITY);
     let shared = Arc::new(Shared {
         leases: Mutex::new(Leases::new(now_ms() as u64)),

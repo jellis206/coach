@@ -49,7 +49,7 @@ fn opens_private_wal_database_with_schema_version() {
     let dir = tempfile::tempdir().unwrap();
     let store = open(&dir);
     assert_eq!(store.journal_mode().unwrap(), "wal");
-    assert_eq!(store.user_version().unwrap(), 1);
+    assert_eq!(store.user_version().unwrap(), 2);
     let db = dir.path().join("state").join("coach.db");
     assert_eq!(
         std::fs::metadata(&db).unwrap().permissions().mode() & 0o777,
