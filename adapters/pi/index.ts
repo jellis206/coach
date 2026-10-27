@@ -53,7 +53,11 @@ export class Transport {
   private spawned = false;
   private droppedCount = 0;
 
-  constructor(private readonly socketPath: string) {}
+  // The binary is fixed per session, like the socket path.
+  constructor(
+    private readonly socketPath: string,
+    private readonly bin = coachBin(),
+  ) {}
 
   send(message: object): void {
     if (this.closed) return;
@@ -108,7 +112,7 @@ export class Transport {
     if (!this.spawned) {
       this.spawned = true;
       try {
-        const child = spawn(coachBin(), ["daemon"], { detached: true, stdio: "ignore" });
+        const child = spawn(this.bin, ["daemon"], { detached: true, stdio: "ignore" });
         child.on("error", () => {});
         child.unref();
       } catch {
