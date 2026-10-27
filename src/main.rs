@@ -359,6 +359,71 @@ fn fit_frame(mut e: EventEnvelope) -> EventEnvelope {
     e
 }
 
+/// What doctor cannot see; repeated so a healthy report is never read as full coverage.
+const COVERAGE_LIMITS: &[&str] = &[
+    "Codex skips hooks it has not trusted, and Claude ignores invalid settings in -p mode; both show as registered_no_events",
+    "harness restarts or /reload are needed before new hooks or extensions load",
+    "subagents are linked only when the harness reports them or a launcher sets COACH_PARENT_AGENT_ID",
+    "a killed harness sends no session end; the daemon notices via liveness checks",
+];
+
+/// `harness_absent`, `not_registered` or `registered`, read from the harness's own config.
+fn registration(base: Option<PathBuf>, config: &str, harness: &str) -> &'static str {
+    let Some(base) = base.filter(|b| b.is_dir()) else {
+        return "harness_absent";
+    };
+    if harness == "pi" {
+        return if base.join(config).is_file() {
+            "registered"
+        } else {
+            "not_registered"
+        };
+    }
+    let owned =
+        regex::Regex::new(&format!(r"^(\S*/)?coach hook {harness}$")).expect("static regex");
+    let found = std::fs::read_to_string(base.join(config))
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|v| v.get("hooks").and_then(Value::as_object).cloned())
+        .is_some_and(|hooks| {
+            hooks
+                .values()
+                .filter_map(Value::as_array)
+                .flatten()
+                .any(|g| {
+                    g["hooks"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .any(|h| h["command"].as_str().is_some_and(|c| owned.is_match(c)))
+                })
+        });
+    if found {
+        "registered"
+    } else {
+        "not_registered"
+    }
+}
+
+/// Registration per harness; `registered_no_events` flags hooks that are configured but silent.
+fn registrations(by_source: &Value) -> Value {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let codex = std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .or_else(|| home.as_ref().map(|h| h.join(".codex")));
+    let status = |harness: &str, base: Option<PathBuf>, config: &str| match registration(
+        base, config, harness,
+    ) {
+        "registered" if by_source[harness].as_u64().unwrap_or(0) == 0 => "registered_no_events",
+        s => s,
+    };
+    json!({
+        "claude": status("claude", home.as_ref().map(|h| h.join(".claude")), "settings.json"),
+        "codex": status("codex", codex, "hooks.json"),
+        "pi": status("pi", home.as_ref().map(|h| h.join(".pi/agent/extensions")), "coach/index.ts"),
+    })
+}
+
 fn doctor(as_json: bool) -> ExitCode {
     let report = match Paths::discover() {
         Err(e) => json!({"ok": false, "error": e.to_string()}),
@@ -375,6 +440,8 @@ fn doctor(as_json: bool) -> ExitCode {
                 "state_dir": paths.state_dir,
                 "daemon": daemon,
                 "store": store,
+                "registrations": registrations(&store["by_source"]),
+                "coverage_limits": COVERAGE_LIMITS,
             })
         }
     };

@@ -610,6 +610,44 @@ fn peer_registration_uses_socket_credentials() {
 }
 
 #[test]
+fn doctor_reports_registrations_and_coverage_limits() {
+    let env = env();
+    let home = env._dir.path().join("home");
+    std::fs::create_dir_all(home.join(".claude")).unwrap();
+    std::fs::write(
+        home.join(".claude/settings.json"),
+        r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/opt/bin/coach hook claude"}]}]}}"#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(home.join(".pi/agent/extensions")).unwrap();
+    let doc = || -> Value {
+        let out = coach(&env)
+            .env("HOME", &home)
+            .env_remove("CODEX_HOME")
+            .args(["doctor", "--json"])
+            .output()
+            .unwrap();
+        serde_json::from_slice(&out.stdout).unwrap()
+    };
+    let before = doc();
+    // Configured but silent: an untrusted Codex hook or a rejected settings file looks like this.
+    assert_eq!(before["registrations"]["claude"], "registered_no_events");
+    assert_eq!(before["registrations"]["codex"], "harness_absent");
+    assert_eq!(before["registrations"]["pi"], "not_registered");
+    assert!(!before["coverage_limits"].as_array().unwrap().is_empty());
+
+    let owner = process::identify(std::process::id()).unwrap();
+    let WireMessage::Event { event: e } = event(&owner, "e1", "session_start") else {
+        unreachable!()
+    };
+    coach::store::Store::open(&env.state.join("coach.db"))
+        .unwrap()
+        .insert(&e, 1)
+        .unwrap();
+    assert_eq!(doc()["registrations"]["claude"], "registered");
+}
+
+#[test]
 fn doctor_without_daemon_reports_not_running() {
     let env = env();
     let doc = doctor(&env);

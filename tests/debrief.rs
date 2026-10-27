@@ -251,6 +251,21 @@ fn known_descendants_are_included() {
 }
 
 #[test]
+fn headless_child_may_name_its_parent_session() {
+    // A top-level Claude session has no agent id, so a launcher passes the session id.
+    let mut f = fx();
+    f.add("parent-session", "tool_failure", 0, failed("make tset"));
+    f.add_with("headless", "tool_failure", 1, failed("make tset"), |e| {
+        e.parent_agent_id = Some("parent-session".into())
+    });
+    let d = f.run(&["parent-session"]);
+    assert_eq!(
+        d.included_sessions,
+        vec!["headless".to_string(), "parent-session".into()]
+    );
+}
+
+#[test]
 fn out_of_order_receipt_is_ordered_by_occurrence() {
     let mut f = fx();
     f.add("s1", "tool_result", 5, ok("rg -n x"));

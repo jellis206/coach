@@ -302,9 +302,11 @@ impl Store {
         for _ in 0..MAX_LINEAGE_DEPTH {
             let set = serde_json::to_string(&included)?;
             let mut stmt = self.conn.prepare(
-                "SELECT DISTINCT session_id FROM events WHERE session_id IS NOT NULL AND parent_agent_id IN (
+                // A parent is named by agent id, or by session id when it has none (top-level Claude/Codex).
+                "SELECT DISTINCT session_id FROM events WHERE session_id IS NOT NULL AND (parent_agent_id IN (
                    SELECT agent_id FROM events WHERE agent_id IS NOT NULL
-                     AND session_id IN (SELECT value FROM json_each(?1)))",
+                     AND session_id IN (SELECT value FROM json_each(?1)))
+                   OR parent_agent_id IN (SELECT value FROM json_each(?1)))",
             )?;
             let found: Vec<String> = stmt
                 .query_map([&set], |r| r.get(0))?
