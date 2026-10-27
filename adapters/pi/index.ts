@@ -94,6 +94,8 @@ export class Transport {
     sock.on("error", () => {});
     sock.on("close", () => {
       if (this.sock === sock) {
+        // A working connection was lost (daemon crash): allow one more restart.
+        if (this.ready) this.spawned = false;
         this.sock = undefined;
         this.ready = false;
       }

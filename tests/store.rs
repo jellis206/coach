@@ -183,6 +183,33 @@ fn redacts_named_credentials() {
 }
 
 #[test]
+fn redacts_whole_private_key_blocks() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = open(&dir);
+    let key = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmU\nQyNTUxOQAAACDsyntheticbody\n-----END OPENSSH PRIVATE KEY-----";
+    let payload = json!({
+        "stdout": format!("before\n{key}\nafter"),
+        // Cut off by bounding before the END line.
+        "truncated": "-----BEGIN RSA PRIVATE KEY-----\nMIIEsyntheticbody",
+    });
+    store
+        .insert(&ev("e1", "tool_result", payload), NOW)
+        .unwrap();
+    let got = store.get("e1").unwrap().unwrap();
+    let text = got.payload.to_string();
+    for body in ["b3BlbnNzaC1rZXktdjEAAAAABG5vbmU", "Qy", "MIIE"] {
+        assert!(!text.contains(body), "{body} leaked: {text}");
+    }
+    assert!(
+        got.payload["stdout"]
+            .as_str()
+            .unwrap()
+            .starts_with("before\n")
+    );
+    assert!(got.payload["stdout"].as_str().unwrap().ends_with("\nafter"));
+}
+
+#[test]
 fn prunes_only_expired_detail() {
     let dir = tempfile::tempdir().unwrap();
     let mut store = open(&dir);

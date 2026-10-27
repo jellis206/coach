@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -186,6 +186,21 @@ test("reload closes idempotently and reconnects without unregistering", async ()
   expect(connections).toBe(2);
   expect(lines.some((l) => l.type === "unregister")).toBe(false);
   expect(events().map((e) => e.kind)).toEqual(["session_start", "session_end", "session_start"]);
+});
+
+test("every lost working connection may restart the daemon", async () => {
+  const bin = join(dir, "fake-coach");
+  writeFileSync(bin, `#!/bin/sh\necho "$1" >> "${join(dir, "spawns")}"\n`, { mode: 0o755 });
+  process.env.COACH_BIN = bin;
+  const pi = await started();
+  const spawns = () => (existsSync(join(dir, "spawns")) ? readFileSync(join(dir, "spawns"), "utf-8").split("\n").filter(Boolean) : []);
+  for (let crash = 1; crash <= 2; crash++) {
+    for (const s of open.splice(0)) s.destroy(); // the daemon died
+    const until = Date.now() + 3000;
+    while ((spawns().length < crash || connections <= crash) && Date.now() < until) await settle(50);
+    expect(spawns()).toEqual(Array(crash).fill("daemon"));
+  }
+  pi.emit("session_shutdown", { reason: "quit" });
 });
 
 test("unreachable daemon bounds the queue and keeps one retry timer", async () => {

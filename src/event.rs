@@ -160,7 +160,8 @@ static SECRET_TEXT: LazyLock<Regex> = LazyLock::new(|| {
         r"|github_pat_[a-z0-9_]{20,}",
         r"|xox[abprs]-[a-z0-9-]{10,}",
         r"|AKIA[0-9A-Z]{16}",
-        r"|-----BEGIN [A-Z ]*PRIVATE KEY-----",
+        // The whole block, or to the end of a value cut off before its END line.
+        r"|-----BEGIN [A-Z ]*PRIVATE KEY-----(?s:.*?)(?:-----END [A-Z ]*PRIVATE KEY-----|\z)",
     ))
     .unwrap()
 });

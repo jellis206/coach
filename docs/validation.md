@@ -21,13 +21,15 @@ Results for the first release (v0.1.0), recorded 2026-10-27. All measurements us
 | --- | --- |
 | `cargo fmt --check` | clean |
 | `cargo clippy --all-targets -- -D warnings` | clean |
-| `cargo test` | 78 passed, 0 failed (lifecycle 24, adapters 21, debrief 21, store 12) |
-| `python3 -m unittest discover -s tests -p 'test_*.py'` | 32 passed |
-| `cd adapters/pi && bun test && bunx tsc --noEmit` | 10 passed, typecheck clean |
+| `cargo test` | 83 passed, 0 failed (lifecycle 28, adapters 21, debrief 21, store 13) |
+| `python3 -m unittest discover -s tests -p 'test_*.py'` | 33 passed |
+| `cd adapters/pi && bun test && bunx tsc --noEmit` | 11 passed, typecheck clean |
 | dotfiles `python3 scripts/test-setup-coach.py` | 6 passed |
 | dotfiles `bun test ./.pi/agent/extensions/flock` | 4 passed |
 
 The lifecycle suite covers the crash, restart, multiple-root and grace-period race cases. It was rerun for this record.
+
+The table shows the counts after the final-review fixes, run with `--test-threads=4`. During that run, every process start on the workstation took about 0.26 s, a machine-wide effect also seen with `/bin/ls`. At full parallelism that slowed daemon startup past the tests' 3 s waits, before and after the fixes. CI runs the suite at default parallelism on macOS and Ubuntu.
 
 ## Overhead
 

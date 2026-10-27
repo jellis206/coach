@@ -112,16 +112,26 @@ def merge_hooks(data, harness, command, events, entry_for):
 
 
 def strip_hooks(data, harness):
-    """Remove owned hooks; drop groups and events that only held Coach. Returns removed count."""
+    """Remove owned hooks; drop groups and events that only held Coach. Returns removed count.
+
+    A Coach-only group followed by other groups stays as an empty placeholder: Codex
+    trust keys are positional (event:group:hook), so shifting later groups would
+    silently untrust them.
+    """
     hooks = data.get("hooks", {})
     removed = 0
     for event in list(hooks):
-        kept_groups = []
+        kept_groups, placeholders = [], []
         for g in hooks[event]:
             kept = [h for h in g.get("hooks", []) if not owned(h.get("command"), harness)]
             removed += len(g.get("hooks", [])) - len(kept)
-            if kept or not g.get("hooks"):  # groups emptied by removing Coach are dropped
+            if g.get("hooks") and not kept:
+                placeholders.append({"hooks": []})
+                kept_groups.append(placeholders[-1])
+            else:
                 kept_groups.append({**g, "hooks": kept})
+        while kept_groups and any(kept_groups[-1] is p for p in placeholders):  # trailing ones shift nothing
+            kept_groups.pop()
         if kept_groups:
             hooks[event] = kept_groups
         else:

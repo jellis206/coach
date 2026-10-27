@@ -117,7 +117,16 @@ impl Harness {
 }
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        // A hook invocation this binary does not understand (config from a newer coach)
+        // still fails open: exit 2 would block the tool call.
+        Err(_) if std::env::args().nth(1).as_deref() == Some("hook") => {
+            let _ = std::io::copy(&mut std::io::stdin(), &mut std::io::sink());
+            return ExitCode::SUCCESS;
+        }
+        Err(e) => e.exit(),
+    };
     match cli.command {
         Cmd::Hook { harness } => {
             hook(harness);
@@ -318,7 +327,7 @@ fn hook(harness: Harness) {
     } else {
         serde_json::from_slice(&raw).unwrap_or(Value::Null)
     };
-    let owner = process::hook_owner(harness.pid_hint());
+    let owner = process::hook_owner(harness.name(), harness.pid_hint());
     let Ok(events) = adapters::normalize(harness.source(), input, owner.as_ref()) else {
         return;
     };
@@ -364,6 +373,8 @@ const COVERAGE_LIMITS: &[&str] = &[
     "Codex skips hooks it has not trusted, and Claude ignores invalid settings in -p mode; both show as registered_no_events",
     "harness restarts or /reload are needed before new hooks or extensions load",
     "subagents are linked only when the harness reports them or a launcher sets COACH_PARENT_AGENT_ID",
+    "COACH_PARENT_AGENT_ID is inherited: a grandchild started without its own lineage is recorded under the original parent",
+    "hook events whose owner process cannot be verified are recorded with an unknown owner",
     "a killed harness sends no session end; the daemon notices via liveness checks",
 ];
 

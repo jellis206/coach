@@ -210,21 +210,73 @@ fn owner_skips_shell_wrappers_and_prefers_verified_hint() {
             name: "claude".into(),
         },
     ];
-    assert_eq!(process::owner_from_chain(&chain, None).unwrap().pid, 10);
     assert_eq!(
-        process::owner_from_chain(&chain, Some(5)).unwrap().pid,
-        5,
-        "hint that is an ancestor wins"
+        process::owner_from_chain(&chain, None, "codex")
+            .unwrap()
+            .pid,
+        10
     );
     assert_eq!(
-        process::owner_from_chain(&chain, Some(999)).unwrap().pid,
+        process::owner_from_chain(&chain, Some(10), "codex")
+            .unwrap()
+            .pid,
         10,
-        "unverified hint is ignored"
+        "hint equal to the nearest owner is accepted"
     );
     assert!(
-        process::owner_from_chain(&chain[..2], None).is_none(),
+        process::owner_from_chain(&chain, Some(5), "claude").is_none(),
+        "an inherited hint naming a farther ancestor is ambiguous, not the owner"
+    );
+    assert_eq!(
+        process::owner_from_chain(&chain, Some(999), "codex")
+            .unwrap()
+            .pid,
+        10,
+        "a hint that is not an ancestor is ignored"
+    );
+    assert!(
+        process::owner_from_chain(&chain[..2], None, "codex").is_none(),
         "only shells: no owner"
     );
+}
+
+#[test]
+fn owner_must_look_like_the_harness() {
+    let chain = |name: &str| {
+        [
+            ProcInfo {
+                pid: 30,
+                ppid: 20,
+                started_at: 3,
+                name: "coach".into(),
+            },
+            ProcInfo {
+                pid: 20,
+                ppid: 1,
+                started_at: 2,
+                name: name.into(),
+            },
+        ]
+    };
+    // A manual run from a terminal, or an orphaned hook adopted by a session manager.
+    for name in ["herdr", "login", "systemd", "python3", "Terminal"] {
+        assert!(
+            process::owner_from_chain(&chain(name), None, "claude").is_none(),
+            "{name} is not a Claude owner"
+        );
+    }
+    // Native binaries, npm launchers and versioned builds are.
+    for (name, harness) in [
+        ("claude", "claude"),
+        ("node", "claude"),
+        ("codex", "codex"),
+        ("codex-aarch64-apple-darwin", "codex"),
+    ] {
+        assert!(
+            process::owner_from_chain(&chain(name), None, harness).is_some(),
+            "{name} is a {harness} owner"
+        );
+    }
 }
 
 #[test]
@@ -399,6 +451,56 @@ fn new_registration_during_grace_cancels_shutdown() {
     assert!(exits_within(&mut d, EXIT_WITHIN));
 }
 
+#[test]
+fn unknown_hook_arguments_fail_open() {
+    // Exit 2 blocks the tool call in Claude Code and Codex; config written for a newer
+    // coach must never do that.
+    let env = env();
+    for args in [
+        &["hook", "future-harness"][..],
+        &["hook", "claude", "--new-flag"],
+    ] {
+        let out = coach(&env)
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(0), "{args:?}");
+        assert!(out.stdout.is_empty(), "{args:?}");
+    }
+}
+
+#[test]
+fn unopenable_store_backs_off_instead_of_respawning_per_hook() {
+    let env = env();
+    std::fs::create_dir_all(&env.state).unwrap();
+    std::fs::set_permissions(
+        &env.state,
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .unwrap();
+    let db = rusqlite::Connection::open(env.state.join("coach.db")).unwrap();
+    db.pragma_update(None, "user_version", 99).unwrap();
+    drop(db);
+    let payload = r#"{"hook_event_name":"Stop","session_id":"s1"}"#;
+    let timed = || {
+        let t = Instant::now();
+        assert!(hook(&env, payload).status.success(), "hooks fail open");
+        t.elapsed()
+    };
+    let first = timed();
+    assert!(
+        !env.state.join("coach.sock").exists(),
+        "a daemon that cannot open its store never binds a socket"
+    );
+    assert!(env.state.join("daemon.failed").exists());
+    let second = timed();
+    assert!(
+        first > second + Duration::from_millis(300),
+        "later hooks skip the doomed spawn wait: first {first:?}, second {second:?}"
+    );
+}
+
 fn hook(env: &Env, payload: &str) -> std::process::Output {
     let mut c = coach(env)
         .args(["hook", "claude"])
@@ -547,6 +649,36 @@ fn sqlite_lock_is_reported_and_recovered() {
         == 1));
     kill(&mut s);
     assert!(exits_within(&mut d, EXIT_WITHIN));
+}
+
+#[test]
+fn registered_peer_connection_survives_idle_periods() {
+    let env = env();
+    let mut d = start_daemon(&env);
+    let mut c = UnixStream::connect(env.state.join("coach.sock")).unwrap();
+    let me = process::identify(std::process::id()).unwrap();
+    let frame = |m: &WireMessage| {
+        let mut line = serde_json::to_vec(m).unwrap();
+        line.push(b'\n');
+        line
+    };
+    c.write_all(&frame(&WireMessage::RegisterPeer {
+        source: "pi".into(),
+    }))
+    .unwrap();
+    // Longer than the slow-sender read timeout.
+    std::thread::sleep(Duration::from_millis(2500));
+    let mut ev = event(&me, "idle-1", "prompt");
+    if let WireMessage::Event { event } = &mut ev {
+        event.process_instance_id = "peer".into();
+    }
+    c.write_all(&frame(&ev)).unwrap();
+    assert!(
+        wait_until(Duration::from_secs(2), || doctor(&env)["store"]["events"]
+            == 1),
+        "an idle Pi connection is still read"
+    );
+    kill(&mut d);
 }
 
 #[test]

@@ -195,6 +195,17 @@ class Codex(Base):
         run(self.home, "remove", "--harness", "codex")
         self.assertEqual(json.loads((d / "hooks.json").read_text()), original)
 
+    def test_remove_keeps_later_hooks_at_their_trusted_position(self):
+        # Codex trust keys are positional (event:group:hook); a hook added after Coach
+        # must keep its group index or Codex silently untrusts it.
+        foreign = lambda c: {"hooks": [{"type": "command", "command": c}]}
+        coach = {"hooks": [{"type": "command", "command": f"{BIN} hook codex", "timeout": 5}]}
+        d = self.codex({"hooks": {"Stop": [foreign("a.sh"), coach, foreign("guard.sh")]}})
+        r = run(self.home, "remove", "--harness", "codex")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        stop = json.loads((d / "hooks.json").read_text())["hooks"]["Stop"]
+        self.assertEqual([g["hooks"][0]["command"] if g["hooks"] else None for g in stop], ["a.sh", None, "guard.sh"])
+
 
 class Pi(Base):
     def test_install_and_remove_extension(self):

@@ -28,6 +28,9 @@ const MAX_CONNECTIONS: usize = 64;
 const READ_TIMEOUT: Duration = Duration::from_secs(2);
 const LOCK_WAIT: Duration = Duration::from_secs(3);
 const BATCH: usize = 256;
+/// Written when the daemon cannot open its store; hooks skip spawning while it is fresh.
+const FAILED_MARKER: &str = "daemon.failed";
+const FAILURE_BACKOFF: Duration = Duration::from_secs(60);
 
 pub fn socket_path(paths: &Paths) -> PathBuf {
     paths.state_dir.join("coach.sock")
@@ -213,6 +216,14 @@ pub fn run(paths: &Paths) -> BoxResult<()> {
         std::thread::sleep(Duration::from_millis(50));
     }
 
+    // Open the store before binding: a daemon that cannot write must not accept
+    // events, and the marker stops every hook from respawning it (see FAILURE_BACKOFF).
+    let failed = paths.state_dir.join(FAILED_MARKER);
+    let mut store = Store::open(&paths.db).inspect_err(|e| {
+        let _ = std::fs::write(&failed, format!("{e}\n"));
+    })?;
+    let _ = std::fs::remove_file(&failed);
+
     // We hold the lock, so anything at the socket path is stale or hostile.
     match std::fs::symlink_metadata(&socket) {
         Ok(meta) if meta.file_type().is_socket() => std::fs::remove_file(&socket)?,
@@ -224,7 +235,6 @@ pub fn run(paths: &Paths) -> BoxResult<()> {
     std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
     listener.set_nonblocking(true)?;
 
-    let mut store = Store::open(&paths.db)?;
     let run_id = store.begin_run(std::process::id(), now_ms())?;
     store.prune(now_ms() - crate::store::RETENTION_MS)?;
     let (queue, rx) = EventQueue::bounded(QUEUE_CAPACITY);
@@ -344,7 +354,11 @@ fn handle(stream: UnixStream, shared: &Shared) {
                         .unwrap()
                         .register(o, now_ms() as u64, process::is_alive)
                 });
-                if !registered {
+                if registered {
+                    // A verified live peer (Pi) idles between events; only unregistered
+                    // connections are held to the slow-sender timeout.
+                    let _ = reader.get_ref().set_read_timeout(None);
+                } else {
                     shared
                         .counters
                         .rejected_registrations
@@ -446,6 +460,12 @@ pub fn connect_or_spawn(paths: &Paths) -> Option<UnixStream> {
     if let Ok(s) = UnixStream::connect(&socket) {
         return Some(s);
     }
+    let recently_failed = std::fs::metadata(paths.state_dir.join(FAILED_MARKER))
+        .and_then(|m| m.modified())
+        .is_ok_and(|t| t.elapsed().is_ok_and(|age| age < FAILURE_BACKOFF));
+    if recently_failed {
+        return None;
+    }
     spawn_daemon().ok()?;
     let deadline = Instant::now() + Duration::from_millis(500);
     while Instant::now() < deadline {
@@ -461,6 +481,7 @@ fn spawn_daemon() -> std::io::Result<()> {
     use std::os::unix::process::CommandExt;
     std::process::Command::new(std::env::current_exe()?)
         .arg("daemon")
+        .current_dir("/")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

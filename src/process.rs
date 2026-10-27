@@ -83,23 +83,34 @@ pub fn ancestry(pid: u32) -> Vec<ProcInfo> {
     chain
 }
 
-/// `chain[0]` is the hook process. A harness-provided `hint` PID wins only when it
-/// is a real ancestor; otherwise the nearest non-wrapper ancestor is the owner.
-pub fn owner_from_chain(chain: &[ProcInfo], hint: Option<u32>) -> Option<&ProcInfo> {
+/// Launchers a harness may run under (npm installs); the harness name itself also counts.
+const LAUNCHERS: &[&str] = &["node", "bun"];
+
+/// `chain[0]` is the hook process. The owner is the nearest non-wrapper ancestor, and
+/// only if its name looks like `harness`. A harness-provided `hint` PID that is a
+/// farther ancestor means the hint was inherited (a script under the harness), so the
+/// owner is ambiguous: `None`, never the outer session.
+pub fn owner_from_chain<'a>(
+    chain: &'a [ProcInfo],
+    hint: Option<u32>,
+    harness: &str,
+) -> Option<&'a ProcInfo> {
     let ancestors = chain.get(1..)?;
-    if let Some(h) = hint.and_then(|h| ancestors.iter().find(|p| p.pid == h)) {
-        return Some(h);
-    }
-    ancestors
+    let nearest = ancestors
         .iter()
-        .find(|p| !WRAPPERS.contains(&p.name.trim_start_matches('-')))
+        .find(|p| !WRAPPERS.contains(&p.name.trim_start_matches('-')))?;
+    if hint.is_some_and(|h| h != nearest.pid && ancestors.iter().any(|p| p.pid == h)) {
+        return None;
+    }
+    let name = nearest.name.to_ascii_lowercase();
+    (name.contains(harness) || LAUNCHERS.contains(&name.as_str())).then_some(nearest)
 }
 
 /// The process that owns the current hook invocation, if it can be proven.
-pub fn hook_owner(hint_var: Option<&str>) -> Option<ProcessIdentity> {
+pub fn hook_owner(harness: &str, hint_var: Option<&str>) -> Option<ProcessIdentity> {
     let hint = hint_var
         .and_then(|v| std::env::var(v).ok())
         .and_then(|v| v.parse().ok());
     let chain = ancestry(std::process::id());
-    owner_from_chain(&chain, hint).map(identity_of)
+    owner_from_chain(&chain, hint, harness).map(identity_of)
 }
