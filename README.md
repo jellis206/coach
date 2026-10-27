@@ -27,7 +27,7 @@ The rest of this section is written for that agent.
    command -v coach && coach --version
    ```
 
-   There are no published releases yet. Once tags exist, each release on this repository's GitHub Releases page has per-target archives and a `SHA256SUMS` file. Download both, run `shasum -a 256 -c SHA256SUMS --ignore-missing`, and use the binary only if the check passes. Never pipe a download into a shell. Done when `coach --version` prints a version.
+   Or use a release from [GitHub Releases](https://github.com/jellis206/coach/releases), which has archives for aarch64-apple-darwin and x86_64-unknown-linux-gnu plus a `SHA256SUMS` file. Download the archive and `SHA256SUMS`, run `shasum -a 256 -c SHA256SUMS --ignore-missing`, and use the binary only if the check passes. Never pipe a download into a shell. Each archive also contains the matching `scripts/configure.py`, Pi adapter and skill, so run the next steps from the extracted directory. Done when `coach --version` prints a version.
 
 4. **Preview the registrations.**
 
