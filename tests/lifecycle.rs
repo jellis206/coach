@@ -594,6 +594,26 @@ fn partial_slow_and_malformed_clients_do_not_block() {
 }
 
 #[test]
+fn connections_over_the_cap_are_counted_as_losses() {
+    let env = env();
+    let mut d = start_daemon(&env);
+    let mut s = sleeper();
+    register(&env, identity(&s));
+    let extra = 6;
+    let held: Vec<_> = (0..64 + extra)
+        .map(|_| UnixStream::connect(env.state.join("coach.sock")).unwrap())
+        .collect();
+    std::thread::sleep(Duration::from_millis(300));
+    drop(held);
+    assert!(wait_until(Duration::from_secs(3), || {
+        doctor(&env)["daemon"]["rejected_connections"].as_u64() >= Some(extra)
+    }));
+    kill(&mut s);
+    assert!(exits_within(&mut d, EXIT_WITHIN));
+    assert!(doctor(&env)["store"]["recorded_losses"].as_u64() >= Some(extra));
+}
+
+#[test]
 fn oversize_frame_is_rejected_without_reading_it_all() {
     let env = env();
     let mut d = start_daemon(&env);

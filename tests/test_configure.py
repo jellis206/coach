@@ -177,6 +177,31 @@ class Codex(Base):
         self.assertIn("trust", r.stdout.lower())
         self.assertNotIn("trusted_hash", (d / "config.toml").read_text(), "never writes trust itself")
 
+    def test_timeouts_fit_codex_limits(self):
+        # Codex clamps Interrupt and SessionEnd hooks to 3 s and warns at startup.
+        d = self.codex({})
+        run(self.home, "install", "--harness", "codex")
+        hooks = json.loads((d / "hooks.json").read_text())["hooks"]
+        timeouts = {e: g[0]["hooks"][0]["timeout"] for e, g in hooks.items()}
+        self.assertEqual({e for e, t in timeouts.items() if t > 3}, set())
+
+    def test_reinstall_updates_an_outdated_coach_hook_in_place(self):
+        old = {"hooks": [{"type": "command", "command": "/old/place/coach hook codex", "timeout": 5}]}
+        d = self.codex({"hooks": {"Stop": [old, {"hooks": [{"type": "command", "command": "guard.sh"}]}]}})
+        r = run(self.home, "install", "--harness", "codex")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        stop = json.loads((d / "hooks.json").read_text())["hooks"]["Stop"]
+        self.assertEqual([g["hooks"][0]["command"] for g in stop], [f"{BIN} hook codex", "guard.sh"])
+        self.assertEqual(stop[0]["hooks"][0]["timeout"], 3)
+        self.assertIn("re-trust", r.stdout)
+
+    def test_remove_keeps_empty_lists_it_did_not_empty(self):
+        original = {"hooks": {"Notification": [], "PreCompact": [{"hooks": []}]}}
+        d = self.codex(original)
+        run(self.home, "install", "--harness", "codex")
+        run(self.home, "remove", "--harness", "codex")
+        self.assertEqual(json.loads((d / "hooks.json").read_text()), original)
+
     def test_hooks_feature_disabled_is_reported_not_rewritten(self):
         d = self.codex({}, config='model = "x"\n')
         r = run(self.home, "install", "--harness", "codex")

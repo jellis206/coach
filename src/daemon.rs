@@ -147,6 +147,7 @@ struct Counters {
     written: AtomicU64,
     rejected_frames: AtomicU64,
     rejected_registrations: AtomicU64,
+    rejected_connections: AtomicU64,
     write_errors: AtomicU64,
 }
 
@@ -160,6 +161,8 @@ pub struct Status {
     pub dropped_queue_full: u64,
     pub rejected_frames: u64,
     pub rejected_registrations: u64,
+    /// Connections refused over the connection cap; their events are lost.
+    pub rejected_connections: u64,
     pub write_errors: u64,
     pub queue_capacity: usize,
 }
@@ -183,6 +186,7 @@ impl Shared {
             dropped_queue_full: self.queue.dropped(),
             rejected_frames: c.rejected_frames.load(Ordering::Relaxed),
             rejected_registrations: c.rejected_registrations.load(Ordering::Relaxed),
+            rejected_connections: c.rejected_connections.load(Ordering::Relaxed),
             write_errors: c.write_errors.load(Ordering::Relaxed),
             queue_capacity: QUEUE_CAPACITY,
         }
@@ -284,6 +288,10 @@ pub fn run(paths: &Paths) -> BoxResult<()> {
 fn accept(stream: UnixStream, shared: &Arc<Shared>) {
     if shared.connections.fetch_add(1, Ordering::AcqRel) >= MAX_CONNECTIONS {
         shared.connections.fetch_sub(1, Ordering::AcqRel);
+        shared
+            .counters
+            .rejected_connections
+            .fetch_add(1, Ordering::Relaxed);
         return; // dropping closes it
     }
     let shared = shared.clone();

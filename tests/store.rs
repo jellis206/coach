@@ -147,6 +147,17 @@ fn preserves_unknown_event_with_status() {
 }
 
 #[test]
+fn diagnostics_count_unknown_owner_events() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = open(&dir);
+    store.insert(&ev("e1", "prompt", json!({})), NOW).unwrap();
+    let mut orphan = ev("e2", "session_end", json!({}));
+    orphan.process_instance_id = "unknown".into();
+    store.insert(&orphan, NOW).unwrap();
+    assert_eq!(store.diagnostics().unwrap().unknown_owner_events, 1);
+}
+
+#[test]
 fn redacts_named_credentials() {
     let dir = tempfile::tempdir().unwrap();
     let mut store = open(&dir);

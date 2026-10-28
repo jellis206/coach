@@ -99,16 +99,22 @@ def write_atomic(path, text, dry_run, backup=True):
 
 
 def merge_hooks(data, harness, command, events, entry_for):
-    """Add one Coach hook per event unless an owned one exists. Returns added event names."""
+    """Add one Coach hook per event; rewrite outdated owned ones in place, keeping their
+    position. Returns (added, updated) event names."""
     hooks = data.setdefault("hooks", {})
-    added = []
+    added, updated = [], []
     for event in events:
         groups = hooks.setdefault(event, [])
-        if any(owned(h.get("command"), harness) for g in groups for h in g.get("hooks", [])):
-            continue
-        groups.append(entry_for(event, command))
-        added.append(event)
-    return added
+        want = entry_for(event, command)["hooks"][0]
+        mine = [(g, i) for g in groups for i, h in enumerate(g.get("hooks", [])) if owned(h.get("command"), harness)]
+        for g, i in mine:
+            if g["hooks"][i] != want:
+                g["hooks"][i] = dict(want)
+                updated.append(event)
+        if not mine:
+            groups.append(entry_for(event, command))
+            added.append(event)
+    return added, updated
 
 
 def strip_hooks(data, harness):
@@ -121,6 +127,8 @@ def strip_hooks(data, harness):
     hooks = data.get("hooks", {})
     removed = 0
     for event in list(hooks):
+        if not any(owned(h.get("command"), harness) for g in hooks[event] for h in g.get("hooks", [])):
+            continue  # leave what Coach never touched exactly as it was
         kept_groups, placeholders = [], []
         for g in hooks[event]:
             kept = [h for h in g.get("hooks", []) if not owned(h.get("command"), harness)]
@@ -136,7 +144,7 @@ def strip_hooks(data, harness):
             hooks[event] = kept_groups
         else:
             del hooks[event]
-    if "hooks" in data and not data["hooks"]:
+    if removed and "hooks" in data and not data["hooks"]:
         del data["hooks"]
     return removed
 
@@ -152,7 +160,8 @@ def claude_entry(event, command):
 
 
 def codex_entry(event, command):
-    group = {"hooks": [{"type": "command", "command": command, "timeout": 5}]}
+    # Codex clamps some events (Interrupt, SessionEnd) to 3 s and warns at startup.
+    group = {"hooks": [{"type": "command", "command": command, "timeout": 3}]}
     if event in CODEX_MATCHED:
         group = {"matcher": "*", **group}
     return group
@@ -163,8 +172,13 @@ def json_harness(path, harness, action, bin_path, events, entry_for, dry_run, al
     data = load_json(path)
     original = json.dumps(data, sort_keys=True)
     if action == "install":
-        changed = merge_hooks(data, harness, f"{bin_path} hook {harness}", events, entry_for)
-        summary = f"add {harness} hooks: {', '.join(changed)}" if changed else f"{harness} hooks already registered"
+        added, updated = merge_hooks(data, harness, f"{bin_path} hook {harness}", events, entry_for)
+        parts = [f"add {harness} hooks: {', '.join(added)}"] if added else []
+        if updated:
+            parts.append(f"update {harness} hooks: {', '.join(updated)}")
+            if harness == "codex":
+                parts.append("changed Codex hooks need you to re-trust them")
+        summary = "; ".join(parts) or f"{harness} hooks already registered"
     else:
         n = strip_hooks(data, harness)
         summary = f"remove {n} {harness} hook(s)" if n else f"no {harness} hooks to remove"

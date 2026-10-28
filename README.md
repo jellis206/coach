@@ -82,7 +82,7 @@ These variables are inherited by everything the child starts. A launcher should 
 - **Debrief:** `coach debrief --session <id>` shows the findings, and `coach finding accept|dismiss <finding-id> [--reference <where the fix lives>]` records your decision on each. The skill walks through this at wrap-up, meaning before a merge or after an approved review, never on an idle turn.
 - **Other commands:** `coach sessions` lists recorded sessions, `coach evidence <event-id>` prints one event in full (private content), and `coach export --session <id> --output <file>` writes a private JSONL file outside Git.
 - **Retention:** detailed evidence older than 30 days is pruned automatically when the daemon starts. To delete sooner, run `coach purge --before YYYY-MM-DD --yes`.
-- **Update:** pull, run `cargo install --locked --path .` again, then re-run the configurator so the Pi extension copy matches the binary. The configurator is idempotent.
+- **Update:** pull, run `cargo install --locked --path .` again, then re-run the configurator so the Pi extension copy matches the binary. The configurator is idempotent. If the binary moved or Coach's hook settings changed, it rewrites its own hooks in place, and Codex then asks you to re-trust them.
 - **Remove:** run `python3 scripts/configure.py remove --harness all`. This deletes only Coach-owned entries and the Coach Pi extension. Evidence stays until you purge it or delete the state directory reported by `coach doctor`.
 
 ### Coverage limits
@@ -91,7 +91,7 @@ These variables are inherited by everything the child starts. A launcher should 
 
 - **Codex trust.** Codex skips untrusted hooks without saying so. `registered_no_events` means the hooks are configured but nothing has arrived yet. `registered` means events from that harness are in the store.
 - **Killed sessions.** A harness killed with SIGKILL sends no session end. The daemon notices through liveness checks.
-- **Unattributed events.** Hook events whose owner process cannot be verified are recorded with an `unknown` owner, and the debrief's coverage line counts them. Examples are a hook run by hand from a terminal, or a script under a harness that runs `coach hook`. Such events never keep the daemon alive. Claude Code's asynchronous SessionEnd hook usually runs after Claude has exited, so expect one unknown-owner event per Claude session. It still carries the session id.
+- **Unattributed events.** Hook events whose owner process cannot be verified are recorded with an `unknown` owner. `store.unknown_owner_events` in `coach doctor --json` and the debrief's coverage line count them. Examples are a hook run by hand from a terminal, or a script under a harness that runs `coach hook`. Such events never keep the daemon alive. Claude Code's asynchronous SessionEnd hook usually runs after Claude has exited, so expect one unknown-owner event per Claude session. It still carries the session id.
 - **Inherited lineage.** See [Custom launchers and subagents](#custom-launchers-and-subagents).
 - **Platforms.** Linux ownership and peer credentials are covered by tests. Live harness checks were run on macOS with Claude Code 2.1.312, Codex 0.164.0 and Pi 1.4.0. Versions, measurements and gaps are in [docs/validation.md](docs/validation.md), and harness contracts in [docs/integrations.md](docs/integrations.md).
 - **Overhead.** A warm hook takes about 4.5 ms at the median and 5 ms at the 95th percentile, mostly process startup. Claude Code runs every Coach hook except Stop and SubagentStop asynchronously.
@@ -104,7 +104,7 @@ Run these checks in a scratch directory outside every repository, for example `m
    - `"ok": true`;
    - `"daemon": {"running": false}` while no harness session is open;
    - `registrations` reports `"registered_no_events"` for each harness you set up and `"harness_absent"` for the others;
-   - `store.recorded_losses` and `store.unclean_daemon_exits` are `0`.
+   - `store.recorded_losses` and `store.unclean_daemon_exits` are `0`. Recorded losses count dropped, rejected and unwritten events, plus connections refused over the daemon's limit of 64.
 
 2. **Live capture.** Start a fresh session in the scratch directory and ask the agent to run `echo coach-onboarding`. While the session is open, `coach doctor --json` shows:
    - `daemon.running` is `true`;

@@ -46,6 +46,9 @@ pub struct Finding {
     pub recurred_after_decision: bool,
     /// Evidence referenced by an earlier decision that has since been purged.
     pub missing_evidence: usize,
+    /// Newest receipt among all matching events, including those past the evidence cap.
+    #[serde(skip)]
+    last_received_ms: i64,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -177,10 +180,12 @@ struct Acc {
     sessions: Vec<String>,
     truncated: bool,
     wait_ms: i64,
+    last_received_ms: i64,
 }
 
 impl Acc {
-    fn add(&mut self, e: &EventEnvelope) {
+    fn add(&mut self, e: &EventEnvelope, received_ms: i64) {
+        self.last_received_ms = self.last_received_ms.max(received_ms);
         if self.evidence.len() < MAX_EVIDENCE {
             self.evidence.push(e.event_id.clone());
         }
@@ -219,7 +224,7 @@ pub fn debrief(store: &mut Store, sessions: &[String], now_ms: i64) -> Result<De
     let mut invocations: BTreeMap<String, Acc> = BTreeMap::new();
     let mut waits = Acc::default();
 
-    for (e, _) in &events {
+    for &(ref e, received) in &events {
         match e.kind.as_str() {
             "tool_failure" | "tool_result" => {
                 let (coarse, _) = fingerprints(e);
@@ -227,13 +232,14 @@ pub fn debrief(store: &mut Store, sessions: &[String], now_ms: i64) -> Result<De
                     Outcome::Failure => {
                         let acc = pending.entry(coarse).or_default();
                         acc.count += 1;
-                        acc.add(e);
+                        acc.add(e, received);
                     }
                     Outcome::Success => {
                         if let Some(mut acc) = pending.remove(&coarse) {
-                            acc.add(e);
+                            acc.add(e, received);
                             let seq = sequences.entry(coarse).or_default();
                             seq.count += acc.count;
+                            seq.last_received_ms = seq.last_received_ms.max(acc.last_received_ms);
                             for id in acc.evidence {
                                 if seq.evidence.len() < MAX_EVIDENCE {
                                     seq.evidence.push(id);
@@ -253,18 +259,18 @@ pub fn debrief(store: &mut Store, sessions: &[String], now_ms: i64) -> Result<De
             "approval_request" => {
                 let acc = approvals.entry(fingerprints(e).1).or_default();
                 acc.count += 1;
-                acc.add(e);
+                acc.add(e, received);
             }
             "tool_start" => {
                 let acc = invocations.entry(fingerprints(e).1).or_default();
                 acc.count += 1;
-                acc.add(e);
+                acc.add(e, received);
             }
             "ui_wait_end" => {
                 if let Some(ms) = e.payload["wait_ms"].as_i64() {
                     waits.count += 1;
                     waits.wait_ms += ms;
-                    waits.add(e);
+                    waits.add(e, received);
                 }
             }
             _ => {}
@@ -293,6 +299,7 @@ pub fn debrief(store: &mut Store, sessions: &[String], now_ms: i64) -> Result<De
             decision: None,
             recurred_after_decision: false,
             missing_evidence: 0,
+            last_received_ms: acc.last_received_ms,
         });
     };
     for (fp, acc) in sequences {
@@ -363,10 +370,9 @@ pub fn debrief(store: &mut Store, sessions: &[String], now_ms: i64) -> Result<De
     }
 
     for f in &mut findings {
-        if let Some(d) = store.decision(&f.id)? {
+        if let Some((d, decided_at_ms)) = store.decision_at(&f.id)? {
             f.decision = Some(d.kind);
-            f.recurred_after_decision =
-                f.evidence_ids.iter().any(|id| !d.evidence_ids.contains(id));
+            f.recurred_after_decision = f.last_received_ms > decided_at_ms;
             for id in &d.evidence_ids {
                 f.missing_evidence += (!store.exists(id)?) as usize;
             }
@@ -405,18 +411,6 @@ pub fn debrief(store: &mut Store, sessions: &[String], now_ms: i64) -> Result<De
         findings,
         coverage,
     })
-}
-
-/// True only when a wrap-up candidate arrived after the last debrief of this selection.
-/// Idle/Stop events never make a debrief ready.
-pub fn wrap_up_ready(store: &Store, sessions: &[String]) -> Result<bool> {
-    let included = store.sessions_with_descendants(sessions)?;
-    let Some(newest) = store.newest_of_kind(&included, "wrap_up_candidate")? else {
-        return Ok(false);
-    };
-    Ok(store
-        .last_debrief(&selection_key(sessions))?
-        .is_none_or(|(cutoff, _)| newest > cutoff))
 }
 
 /// Coach-generated finding summary for a decision record: never raw output.

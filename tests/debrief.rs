@@ -1,7 +1,7 @@
 use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 
-use coach::debrief::{Debrief, PatternKind, debrief, render_markdown, wrap_up_ready};
+use coach::debrief::{Debrief, PatternKind, debrief, render_markdown};
 use coach::event::{CaptureStatus, EventEnvelope, Truncation};
 use coach::store::{Decision, DecisionKind, Store};
 use serde_json::{Value, json};
@@ -340,24 +340,23 @@ fn decisions_survive_restart_and_recurrence_shows_missing_evidence() {
 }
 
 #[test]
-fn idle_never_makes_a_debrief_ready_but_wrap_up_does_once() {
+fn recurrence_is_seen_past_the_evidence_cap() {
     let mut f = fx();
-    let s = vec!["s1".to_string()];
-    for i in 0..5 {
-        f.add("s1", "idle", i, json!({}));
+    for at in 1..=25 {
+        f.add("s1", "tool_failure", at, failed("cargo tset"));
     }
-    assert!(!wrap_up_ready(&f.store, &s).unwrap());
-    f.add(
-        "s1",
-        "wrap_up_candidate",
-        6,
-        json!({"basis": "command_text", "remote_state": "unverified"}),
-    );
-    assert!(wrap_up_ready(&f.store, &s).unwrap());
-    f.run(&["s1"]);
-    assert!(!wrap_up_ready(&f.store, &s).unwrap(), "already debriefed");
-    f.add("s1", "idle", 7, json!({}));
-    assert!(!wrap_up_ready(&f.store, &s).unwrap());
+    let first = f.run(&["s1"]).findings.remove(0);
+    let decision = Decision {
+        finding_id: first.id.clone(),
+        kind: DecisionKind::Accepted,
+        reference: None,
+        summary: "Use the documented cargo alias".into(),
+        evidence_ids: first.evidence_ids,
+    };
+    f.store.decide(&decision, T0 + 30 * 60_000).unwrap();
+    assert!(!f.run(&["s1"]).findings[0].recurred_after_decision);
+    f.add("s1", "tool_failure", 40, failed("cargo tset"));
+    assert!(f.run(&["s1"]).findings[0].recurred_after_decision);
 }
 
 #[test]

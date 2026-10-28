@@ -40,9 +40,6 @@ enum Cmd {
         sessions: Vec<String>,
         #[arg(long)]
         json: bool,
-        /// Print nothing unless a wrap-up candidate arrived since the last debrief.
-        #[arg(long)]
-        if_ready: bool,
     },
     /// List recorded sessions (no captured content).
     Sessions {
@@ -159,14 +156,7 @@ fn run(cmd: Cmd) -> BoxResult<()> {
     let paths = Paths::discover()?;
     let mut store = Store::open(&paths.db)?;
     match cmd {
-        Cmd::Debrief {
-            sessions,
-            json,
-            if_ready,
-        } => {
-            if if_ready && !debrief::wrap_up_ready(&store, &sessions)? {
-                return Ok(());
-            }
+        Cmd::Debrief { sessions, json } => {
             let d = debrief::debrief(&mut store, &sessions, daemon::now_ms())?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&d)?);

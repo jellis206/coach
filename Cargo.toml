@@ -1,6 +1,6 @@
 [package]
 name = "coach"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.95"
 
@@ -16,3 +16,8 @@ sysinfo = "0.39.6"
 [dev-dependencies]
 rusqlite = { version = "0.41.0", features = ["bundled"] }
 tempfile = "3.27.0"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

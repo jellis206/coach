@@ -59,6 +59,15 @@ All live runs used a scratch directory, synthetic prompts and normal approval se
 
 - **After the v0.1.0 install.** A `codex exec` and two `claude -p` probes were attributed to their own harness process for every event except Claude's `SessionEnd`. That hook runs asynchronously and usually after Claude has exited, so it is recorded with an unknown owner and its session id.
 
+## v0.1.1
+
+v0.1.1 fixes the minors deferred from the v0.1.0 review. The release profile adds `lto`, `codegen-units = 1` and `strip`, which shrinks the binary from 5.6 MB to 4.1 MB. Overhead was not re-measured, because every process start on the workstation took about 0.26 s at the time.
+
+| Command | Result |
+| --- | --- |
+| `cargo test` (`--test-threads=4`) | 85 passed (lifecycle 29, adapters 21, debrief 21, store 14) |
+| `python3 -m unittest discover -s tests -p 'test_*.py'` | 36 passed |
+
 ## Known gaps
 
 - Hook p95 is just above the 5 ms target. See [Overhead](#overhead).

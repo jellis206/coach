@@ -62,6 +62,8 @@ pub struct Diagnostics {
     pub truncated_events: u64,
     pub redacted_events: u64,
     pub unknown_kind_events: u64,
+    /// Events whose owner process could not be verified.
+    pub unknown_owner_events: u64,
     pub oldest_received_ms: Option<i64>,
     pub newest_received_ms: Option<i64>,
     pub decisions: u64,
@@ -216,24 +218,38 @@ impl Store {
     }
 
     pub fn decision(&self, finding_id: &str) -> Result<Option<Decision>> {
+        Ok(self.decision_at(finding_id)?.map(|(d, _)| d))
+    }
+
+    /// The decision and when it was made.
+    pub fn decision_at(&self, finding_id: &str) -> Result<Option<(Decision, i64)>> {
         let row = self
             .conn
             .query_row(
-                "SELECT kind, reference, summary, evidence_ids FROM decisions WHERE finding_id = ?1",
+                "SELECT kind, reference, summary, evidence_ids, decided_at_ms FROM decisions WHERE finding_id = ?1",
                 [finding_id],
-                |r| Ok((r.get::<_, String>(0)?, r.get(1)?, r.get(2)?, r.get::<_, String>(3)?)),
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get::<_, String>(3)?,
+                        r.get(4)?,
+                    ))
+                },
             )
             .optional()?;
-        let Some((kind, reference, summary, ids)) = row else {
+        let Some((kind, reference, summary, ids, decided_at_ms)) = row else {
             return Ok(None);
         };
-        Ok(Some(Decision {
+        let decision = Decision {
             finding_id: finding_id.into(),
             kind: serde_json::from_value(serde_json::Value::String(kind))?,
             reference,
             summary,
             evidence_ids: serde_json::from_str(&ids)?,
-        }))
+        };
+        Ok(Some((decision, decided_at_ms)))
     }
 
     pub fn diagnostics(&self) -> Result<Diagnostics> {
@@ -265,11 +281,14 @@ impl Store {
         d.unknown_kind_events = count(&format!(
             "SELECT COUNT(*) FROM events WHERE json_extract({status}, '$.unknown_kind')"
         ))?;
+        d.unknown_owner_events = count(
+            "SELECT COUNT(*) FROM events WHERE json_extract(envelope, '$.process_instance_id') = 'unknown'",
+        )?;
         d.decisions = count("SELECT COUNT(*) FROM decisions")?;
         d.unclean_daemon_exits = count("SELECT COUNT(*) FROM daemon_runs WHERE unclean = 1")?;
         d.recorded_losses = count(
             "SELECT COALESCE(SUM(json_extract(counters, '$.dropped_queue_full') + json_extract(counters, '$.rejected_frames')
-               + json_extract(counters, '$.write_errors')), 0) FROM daemon_runs WHERE counters IS NOT NULL",
+               + json_extract(counters, '$.write_errors') + COALESCE(json_extract(counters, '$.rejected_connections'), 0)), 0) FROM daemon_runs WHERE counters IS NOT NULL",
         )?;
         Ok(d)
     }
@@ -403,15 +422,6 @@ impl Store {
                 |r| r.get(0),
             )
             .optional()?)
-    }
-
-    /// Received time of the newest event of `kind` among `sessions`.
-    pub fn newest_of_kind(&self, sessions: &[String], kind: &str) -> Result<Option<i64>> {
-        Ok(self.conn.query_row(
-            "SELECT MAX(received_at_ms) FROM events WHERE kind = ?2 AND session_id IN (SELECT value FROM json_each(?1))",
-            params![serde_json::to_string(sessions)?, kind],
-            |r| r.get(0),
-        )?)
     }
 
     pub fn journal_mode(&self) -> Result<String> {
