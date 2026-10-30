@@ -127,13 +127,75 @@ fn command(e: &EventEnvelope) -> Option<String> {
     }
 }
 
-/// `(program, program + subcommand-or-flag)` without arguments that could be paths or content.
+/// Shell setup that only prepares for the command the agent actually meant to run.
+const SHELL_SETUP: &[&str] = &[
+    "cd", "pushd", "popd", "export", "set", "unset", "source", ".", "local", "shopt", "trap",
+    "umask", "for", "while", "until", "case", "done", "fi", "esac", "true", "false", ":",
+];
+/// Keywords that prefix a command inside a compound statement.
+const SHELL_PREFIX: &[&str] = &["do", "then", "else", "if", "elif", "!", "time", "{", "("];
+/// The harness's own tools: using them often is normal work, not a workaround.
+const CORE_TOOLS: &[&str] = &[
+    "Edit",
+    "MultiEdit",
+    "Read",
+    "Write",
+    "Grep",
+    "Glob",
+    "LS",
+    "Agent",
+    "Task",
+    "TodoWrite",
+    "ToolSearch",
+    "apply_patch",
+    "read",
+    "edit",
+    "write",
+];
+
+/// Shell programs that stand in for a harness's dedicated read/search tools.
+const READ_WORKAROUNDS: &[&str] = &[
+    "cat", "head", "tail", "sed", "awk", "grep", "egrep", "rg", "find", "ls", "wc",
+];
+/// Harnesses that ship dedicated read/search tools; Codex reads through its shell.
+const HAS_READ_TOOL: &[&str] = &["claude", "pi"];
+
+/// The first command after shell setup; a command that is only setup stands for itself.
+fn main_command(command: &str) -> Vec<&str> {
+    let segments: Vec<Vec<&str>> = command
+        .split(['\n', ';', '|', '&'])
+        .map(|s| {
+            s.split_whitespace()
+                .skip_while(|w| {
+                    SHELL_PREFIX.contains(w) || (w.contains('=') && !w.starts_with('-'))
+                })
+                .collect::<Vec<_>>()
+        })
+        // Splitting ignores quoting, so drop pieces of quoted text or redirections.
+        .filter(|s| {
+            s.first().is_some_and(|w| {
+                w.starts_with(|c: char| c.is_ascii_alphabetic() || "/._~".contains(c))
+                    && w.chars()
+                        .all(|c| c.is_ascii_alphanumeric() || "/._~+-:".contains(c))
+            })
+        })
+        .collect();
+    segments
+        .iter()
+        .find(|s| !SHELL_SETUP.contains(&s[0]))
+        .or(segments.first())
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// `(retry key, program + subcommand-or-flag)` without arguments that could be paths or
+/// content. The retry key is the program, or `git push` for subcommand CLIs, so changing
+/// flags is a retry but switching to another subcommand is not.
 fn command_keys(command: &str) -> Option<(String, String)> {
-    let mut words = command
-        .split_whitespace()
-        .skip_while(|w| w.contains('=') && !w.starts_with('-'));
+    let mut words = main_command(command).into_iter();
     let program = words.next()?.rsplit('/').next()?.to_string();
-    let sub = words.next().filter(|w| {
+    let next = words.next();
+    let sub = next.filter(|w| {
         // Only flags, or subcommands of CLIs built around them; plain arguments may be private.
         if !w.starts_with('-') && !SUBCOMMAND_CLIS.contains(&program.as_str()) {
             return false;
@@ -145,16 +207,35 @@ fn command_keys(command: &str) -> Option<(String, String)> {
             && w.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
     });
     let full = sub.map_or_else(|| program.clone(), |s| format!("{program} {s}"));
-    Some((program, full))
+    let retry = if next.is_some_and(|w| !w.starts_with('-')) && sub.is_some() {
+        full.clone()
+    } else {
+        program
+    };
+    Some((retry, full))
 }
 
 /// `(coarse, fine)` fingerprints: tool + program, tool + program + subcommand.
 fn fingerprints(e: &EventEnvelope) -> (String, String) {
     let tool = tool_name(e);
+    if CORE_TOOLS.contains(&tool.as_str()) {
+        return (tool.clone(), tool); // e.g. a patch's `command` is file content
+    }
     match command(e).as_deref().and_then(command_keys) {
         Some((p, full)) => (format!("{tool}:{p}"), format!("{tool}:{full}")),
         None => (tool.clone(), tool),
     }
+}
+
+/// The program, when this is shell reading or searching in a harness with a tool for it.
+fn read_workaround(e: &EventEnvelope) -> Option<String> {
+    if !HAS_READ_TOOL.contains(&e.source.as_str()) {
+        return None;
+    }
+    let (program, _) = command(e).as_deref().and_then(command_keys)?;
+    READ_WORKAROUNDS
+        .contains(&program.as_str())
+        .then_some(program)
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -221,7 +302,8 @@ pub fn debrief(store: &mut Store, sessions: &[String], now_ms: i64) -> Result<De
     let mut pending: BTreeMap<String, Acc> = BTreeMap::new();
     let mut sequences: BTreeMap<String, Acc> = BTreeMap::new();
     let mut approvals: BTreeMap<String, Acc> = BTreeMap::new();
-    let mut invocations: BTreeMap<String, Acc> = BTreeMap::new();
+    // Per tool: all shell reading together, with counts per program for the title.
+    let mut invocations: BTreeMap<String, (Acc, BTreeMap<String, u64>)> = BTreeMap::new();
     let mut waits = Acc::default();
 
     for &(ref e, received) in &events {
@@ -262,9 +344,14 @@ pub fn debrief(store: &mut Store, sessions: &[String], now_ms: i64) -> Result<De
                 acc.add(e, received);
             }
             "tool_start" => {
-                let acc = invocations.entry(fingerprints(e).1).or_default();
-                acc.count += 1;
-                acc.add(e, received);
+                if let Some(program) = read_workaround(e) {
+                    let (acc, programs) = invocations
+                        .entry(format!("{}:shell-read", tool_name(e)))
+                        .or_default();
+                    acc.count += 1;
+                    acc.add(e, received);
+                    *programs.entry(program).or_default() += 1;
+                }
             }
             "ui_wait_end" => {
                 if let Some(ms) = e.payload["wait_ms"].as_i64() {
@@ -343,18 +430,25 @@ pub fn debrief(store: &mut Store, sessions: &[String], now_ms: i64) -> Result<De
             ],
         );
     }
-    for (fp, acc) in invocations
+    for (fp, (acc, programs)) in invocations
         .into_iter()
-        .filter(|(_, a)| a.count >= REPEATED_INVOCATION)
+        .filter(|(_, (a, _))| a.count >= REPEATED_INVOCATION)
     {
-        let title = format!("`{fp}` invoked {} times", acc.count);
+        let mut programs: Vec<_> = programs.into_iter().collect();
+        programs.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        let breakdown: Vec<_> = programs.iter().map(|(p, n)| format!("{p} {n}")).collect();
+        let title = format!(
+            "`{fp}`: {} shell reads or searches ({})",
+            acc.count,
+            breakdown.join(", ")
+        );
         push(
             PatternKind::RepeatedInvocation,
             fp,
             acc,
             title,
-            "observed invocations; repetition alone is not a mistake",
-            vec!["Check whether a dedicated tool or documented pattern would replace the workaround.".into()],
+            "observed shell invocations; the harness offers dedicated read/search tools",
+            vec!["The harness has dedicated read and search tools; check whether an instruction should steer the agent to them.".into()],
         );
     }
     if waits.count > 0 {

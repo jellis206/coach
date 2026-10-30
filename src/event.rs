@@ -86,6 +86,9 @@ pub enum WireMessage {
     },
     /// Ask for payload-free daemon counters; the daemon answers with one JSON line.
     Status,
+    /// Drain the queue and exit cleanly even while owners are alive (e.g. after an
+    /// upgrade); the next hook starts a fresh daemon.
+    Stop,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

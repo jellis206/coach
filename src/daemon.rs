@@ -172,6 +172,7 @@ struct Shared {
     queue: EventQueue,
     counters: Counters,
     connections: AtomicUsize,
+    stop_requested: AtomicBool,
 }
 
 impl Shared {
@@ -247,6 +248,7 @@ pub fn run(paths: &Paths) -> BoxResult<()> {
         queue,
         counters: Counters::default(),
         connections: AtomicUsize::new(0),
+        stop_requested: AtomicBool::new(false),
     });
     let stopping = Arc::new(AtomicBool::new(false));
     let writer = {
@@ -272,7 +274,7 @@ pub fn run(paths: &Paths) -> BoxResult<()> {
             .lock()
             .unwrap()
             .tick(now_ms() as u64, |o| !check || process::is_alive(o));
-        if tick == Tick::Exit {
+        if tick == Tick::Exit || shared.stop_requested.load(Ordering::Relaxed) {
             break;
         }
     }
@@ -384,6 +386,7 @@ fn handle(stream: UnixStream, shared: &Shared) {
                 shared.leases.lock().unwrap().unregister(&instance_id)
             }
             Ok(WireMessage::Ping { .. }) => {}
+            Ok(WireMessage::Stop) => shared.stop_requested.store(true, Ordering::Relaxed),
             Ok(WireMessage::Status) => {
                 let mut out = serde_json::to_vec(&shared.status()).unwrap_or_default();
                 out.push(b'\n');
@@ -507,6 +510,24 @@ pub fn send(stream: &mut UnixStream, messages: &[WireMessage]) -> std::io::Resul
         buf.push(b'\n');
     }
     stream.write_all(&buf)
+}
+
+/// Ask a running daemon to drain and exit; true once it has (or none was running).
+pub fn stop(socket: &Path) -> bool {
+    let Ok(mut s) = UnixStream::connect(socket) else {
+        return true;
+    };
+    if send(&mut s, &[WireMessage::Stop]).is_err() {
+        return false;
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if UnixStream::connect(socket).is_err() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    false
 }
 
 /// Ask a running daemon for its counters. None when no daemon answers.

@@ -68,6 +68,22 @@ v0.1.1 fixes the minors deferred from the v0.1.0 review. The release profile add
 | `cargo test` (`--test-threads=4`) | 85 passed (lifecycle 29, adapters 21, debrief 21, store 14) |
 | `python3 -m unittest discover -s tests -p 'test_*.py'` | 36 passed |
 
+## v0.1.2
+
+v0.1.2 tightens findings after three days of real use, in which a busy session got 17 to 26 findings, most of them noise:
+
+- Commands are named by the program they run after shell setup (`cd`, assignments, `set`, `export`, loops), so `cd repo && cargo test` counts as `cargo test`.
+- A failure followed by a success counts as a retry only within one subcommand: `git push` then `git status` is not a retry.
+- Repeated invocations are reported only for shell reading or searching (`cat`, `sed`, `grep`, `rg`, `ls` and similar) in harnesses that have dedicated tools for it (Claude Code, Pi), as one finding per tool. Codex reads through its shell, so it gets none.
+- `coach daemon --stop` drains and stops the daemon, so upgrades take effect without waiting for every session to close.
+
+Re-running the debrief on the same three busiest sessions (two Claude Code, one Codex) went from 17, 25 and 26 findings to 17, 7 and 10. The remaining findings are real approval prompts, retries within one subcommand, and one shell-reading summary per Claude session.
+
+| Command | Result |
+| --- | --- |
+| `cargo test` (`--test-threads=4`) | 93 passed (lifecycle 30, adapters 21, debrief 28, store 14) |
+| `python3 -m unittest discover -s tests -p 'test_*.py'` | 36 passed |
+
 ## Known gaps
 
 - Hook p95 is just above the 5 ms target. See [Overhead](#overhead).
