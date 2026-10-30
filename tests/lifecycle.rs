@@ -601,16 +601,24 @@ fn stop_drains_and_exits_cleanly_despite_live_owners() {
     let owner = identity(&s);
     register(&env, owner.clone());
     send(&env, &[event(&owner, "e1", "prompt")]);
+    // A connection that stays open, like Pi's, sends just before the stop request.
+    let mut open = UnixStream::connect(env.state.join("coach.sock")).unwrap();
+    let mut line = serde_json::to_vec(&event(&owner, "e2", "prompt")).unwrap();
+    line.push(b'\n');
+    open.write_all(&line).unwrap();
     let out = coach(&env).args(["daemon", "--stop"]).output().unwrap();
     assert!(
         out.status.success(),
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(exits_within(&mut d, Duration::from_secs(3)));
+    assert!(
+        d.try_wait().unwrap().is_some(),
+        "--stop returns only after the daemon has finished"
+    );
     let doc = doctor(&env);
     assert_eq!(doc["daemon"]["running"], false);
-    assert_eq!(doc["store"]["events"], 1, "queued events are written first");
+    assert_eq!(doc["store"]["events"], 2, "queued events are written first");
     assert_eq!(doc["store"]["unclean_daemon_exits"], 0);
     let again = coach(&env).args(["daemon", "--stop"]).output().unwrap();
     assert!(again.status.success(), "stopping no daemon is not an error");

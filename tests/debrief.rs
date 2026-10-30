@@ -272,17 +272,17 @@ fn fingerprints_name_the_program_past_shell_setup() {
 fn patches_group_as_one_tool_without_their_content() {
     let patch = |name: &str| {
         json!({"raw": {"tool_name": "apply_patch",
-            "tool_input": {"command": format!("*** Begin Patch\n*** Add File: /private/{name}\n+secret\n*** End Patch")}}})
+            "tool_input": {"command": format!("*** Begin Patch\n*** Update File: /private/{name}\n acmecorp notes here\n+secret\n*** End Patch")}}})
     };
     let mut f = fx();
-    for i in 0..5 {
-        f.add("s1", "tool_start", i, patch(&format!("acmecorp-{i}")));
+    for i in 0..3 {
+        f.add("s1", "approval_request", i, patch(&format!("acmecorp-{i}")));
     }
     let d = f.run(&["s1"]);
-    assert!(
-        d.findings.is_empty(),
-        "patching is the harness's own edit tool: {:#?}",
-        d.findings
+    assert_eq!(d.findings.len(), 1, "{:#?}", d.findings);
+    assert_eq!(
+        d.findings[0].fingerprint, "apply_patch",
+        "patch content is not a command"
     );
 }
 
@@ -310,6 +310,54 @@ fn only_shell_file_reading_is_a_workaround_and_only_beside_a_read_tool() {
 }
 
 #[test]
+fn quoted_text_substitutions_heredocs_and_comments_never_become_programs() {
+    for (command, want) in [
+        ("export MSG=\"Summary; acmecorp onboarding\"", "Bash:export"),
+        (
+            "BODY=\"$(cat <<'EOF'\nFixes acmecorp\nEOF\n)\"; gh pr create",
+            "Bash:gh pr",
+        ),
+        ("# build & acmecorp deploy\ncargo test", "Bash:cargo test"),
+        (
+            "cd /r && f=$(fd acmecorp-factory.ts src) && rg -n x \"$f\"",
+            "Bash:rg -n",
+        ),
+        (
+            "cat <<EOF > notes\nacmecorp; plan\nEOF\nwc -l notes",
+            "Bash:cat",
+        ),
+        ("rg -l \"export (const|async acmecorp)\" src", "Bash:rg -l"),
+        ("echo 'unbalanced; acmecorp", "Bash:echo"),
+        ("make deploy-acmecorp", "Bash:make"),
+        ("git -C /r push origin x", "Bash:git push"),
+    ] {
+        let fp = fingerprint_of(command);
+        assert_eq!(fp, want, "{command}");
+    }
+}
+
+#[test]
+fn a_mistyped_subcommand_then_the_right_one_is_a_retry() {
+    let mut f = fx();
+    f.add("s1", "tool_failure", 1, failed("cargo tset"));
+    f.add("s1", "tool_result", 2, ok("cargo test"));
+    let d = f.run(&["s1"]);
+    assert_eq!(d.findings.len(), 1, "{:#?}", d.findings);
+    assert_eq!(d.findings[0].kind, PatternKind::FailureThenSuccess);
+    assert_eq!(d.findings[0].fingerprint, "Bash:cargo test");
+}
+
+#[test]
+fn shell_writes_are_not_shell_reads() {
+    let mut f = fx();
+    for i in 0..5 {
+        f.add("s1", "tool_start", i, bash("cat > notes.txt"));
+        f.add("s1", "tool_start", i, bash("sed -i s/a/b/ notes.txt"));
+    }
+    assert!(f.run(&["s1"]).findings.is_empty());
+}
+
+#[test]
 fn quoted_separators_do_not_make_programs() {
     assert_eq!(
         fingerprint_of("cd /x\n\"select a\" | -S b 2>&1\nrg -n y"),
@@ -334,7 +382,7 @@ fn core_tools_are_not_repeated_workarounds() {
                 "s1",
                 "tool_start",
                 i,
-                json!({"raw": {"tool_name": tool, "tool_input": {}}}),
+                json!({"raw": {"tool_name": tool, "tool_input": {"command": "cat notes.txt"}}}),
             );
         }
     }

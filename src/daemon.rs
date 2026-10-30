@@ -2,7 +2,7 @@
 //! verified owner processes, exit after the last owner is gone.
 
 use std::collections::HashMap;
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt};
@@ -25,6 +25,8 @@ pub const GRACE: Duration = Duration::from_secs(3);
 pub const DRAIN: Duration = Duration::from_secs(2);
 pub const QUEUE_CAPACITY: usize = 1024;
 const MAX_CONNECTIONS: usize = 64;
+/// How long a stopping daemon waits for open connections to deliver their last frames.
+const DRAIN_CONNECTIONS: Duration = Duration::from_secs(1);
 const READ_TIMEOUT: Duration = Duration::from_secs(2);
 const LOCK_WAIT: Duration = Duration::from_secs(3);
 const BATCH: usize = 256;
@@ -279,8 +281,17 @@ pub fn run(paths: &Paths) -> BoxResult<()> {
         }
     }
 
-    drop(listener);
+    // Unlink first so new hooks go to a fresh daemon, then take what is already queued
+    // in the backlog and give open connections a bounded moment to deliver.
     let _ = std::fs::remove_file(&socket);
+    while let Ok((stream, _)) = listener.accept() {
+        accept(stream, &shared);
+    }
+    drop(listener);
+    let deadline = Instant::now() + DRAIN_CONNECTIONS;
+    while shared.connections.load(Ordering::Acquire) > 0 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
     stopping.store(true, Ordering::Relaxed);
     let mut store = writer.join().map_err(|_| "writer panicked")?;
     store.end_run(run_id, now_ms(), &shared.status())?;
@@ -513,16 +524,39 @@ pub fn send(stream: &mut UnixStream, messages: &[WireMessage]) -> std::io::Resul
 }
 
 /// Ask a running daemon to drain and exit; true once it has (or none was running).
-pub fn stop(socket: &Path) -> bool {
+pub fn stop(paths: &Paths) -> bool {
+    let socket = &socket_path(paths);
+    match UnixStream::connect(socket) {
+        Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::ConnectionRefused) => {
+            return true;
+        }
+        Err(_) => return false,
+        Ok(_) => {}
+    }
+    // Wait for the process, not the socket: it unlinks the socket before draining.
+    let Some(pid) = query_status(socket).and_then(|s| s["pid"].as_u64()) else {
+        return false;
+    };
     let Ok(mut s) = UnixStream::connect(socket) else {
-        return true;
+        return false;
     };
     if send(&mut s, &[WireMessage::Stop]).is_err() {
         return false;
     }
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // Done when the daemon lock is free (its holder exited, even if not yet reaped) or a
+    // different daemon, started by a hook meanwhile, answers.
+    let Ok(lock) = File::open(paths.state_dir.join("daemon.lock")) else {
+        return false;
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
-        if UnixStream::connect(socket).is_err() {
+        if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) } == 0 {
+            return true;
+        }
+        if query_status(socket)
+            .and_then(|s| s["pid"].as_u64())
+            .is_some_and(|p| p != pid)
+        {
             return true;
         }
         std::thread::sleep(Duration::from_millis(50));

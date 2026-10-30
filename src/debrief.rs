@@ -13,7 +13,7 @@ const MAX_EVIDENCE: usize = 20;
 const REPEATED_INVOCATION: u64 = 5;
 const SUBCOMMAND_CLIS: &[&str] = &[
     "git", "gh", "cargo", "npm", "pnpm", "yarn", "bun", "docker", "kubectl", "go", "pip", "uv",
-    "brew", "linear", "codex", "claude", "pi", "coach", "make", "just",
+    "brew", "linear", "codex", "claude", "coach",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -160,29 +160,113 @@ const READ_WORKAROUNDS: &[&str] = &[
 /// Harnesses that ship dedicated read/search tools; Codex reads through its shell.
 const HAS_READ_TOOL: &[&str] = &["claude", "pi"];
 
+/// Top-level simple commands of a shell line, split on `\n ; | &` outside quotes and
+/// `$(…)`/backticks, with comments and heredoc bodies dropped. None if quoting is
+/// unbalanced, since then nothing past the first word can be trusted.
+fn shell_segments(command: &str) -> Option<Vec<String>> {
+    let (mut out, mut cur) = (Vec::new(), String::new());
+    let (mut single, mut double, mut subst, mut tick) = (false, false, 0usize, false);
+    let mut heredocs: Vec<String> = Vec::new();
+    let mut chars = command.chars().peekable();
+    while let Some(c) = chars.next() {
+        let nested = single || double || subst > 0 || tick;
+        match c {
+            '\'' if !double && !tick => single = !single,
+            '"' if !single && !tick => double = !double,
+            '\\' if !single => {
+                cur.push(c);
+                if let Some(n) = chars.next() {
+                    cur.push(n);
+                }
+                continue;
+            }
+            '`' if !single => tick = !tick,
+            '$' if !single && chars.peek() == Some(&'(') => {
+                subst += 1;
+                cur.push(c);
+                cur.push(chars.next()?);
+                continue;
+            }
+            ')' if !single && subst > 0 => subst -= 1,
+            '#' if !nested && cur.chars().last().is_none_or(char::is_whitespace) => {
+                while chars.next_if(|&n| n != '\n').is_some() {}
+                continue;
+            }
+            '<' if !nested && chars.peek() == Some(&'<') => {
+                chars.next();
+                chars.next_if_eq(&'-');
+                while chars.next_if(|n| *n == ' ').is_some() {}
+                let mut delim = String::new();
+                while let Some(n) = chars.next_if(|n| !n.is_whitespace() && !";|&<>".contains(*n)) {
+                    delim.push(n);
+                }
+                heredocs.push(delim.trim_matches(['\'', '"']).to_string());
+                continue;
+            }
+            '\n' | ';' | '|' | '&' if !nested => {
+                out.push(std::mem::take(&mut cur));
+                if c == '\n' {
+                    // Heredoc bodies start on the next line and end at their delimiter.
+                    for delim in heredocs.drain(..) {
+                        loop {
+                            let line: String = chars.by_ref().take_while(|&n| n != '\n').collect();
+                            if line.trim() == delim || chars.peek().is_none() {
+                                break;
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
+            _ => {}
+        }
+        cur.push(c);
+    }
+    out.push(cur);
+    (!single && !double && subst == 0 && !tick).then_some(out)
+}
+
+/// A word that names a program, not a piece of quoted text or a redirection.
+fn is_program(w: &str) -> bool {
+    w.starts_with(|c: char| c.is_ascii_alphabetic() || "/._~".contains(c))
+        && w.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "/._~+-:".contains(c))
+}
+
 /// The first command after shell setup; a command that is only setup stands for itself.
-fn main_command(command: &str) -> Vec<&str> {
-    let segments: Vec<Vec<&str>> = command
-        .split(['\n', ';', '|', '&'])
-        .map(|s| {
-            s.split_whitespace()
-                .skip_while(|w| {
+fn main_command(command: &str) -> Vec<String> {
+    let Some(segments) = shell_segments(command) else {
+        return command
+            .split_whitespace()
+            .take(1)
+            .filter(|w| is_program(w))
+            .map(String::from)
+            .collect();
+    };
+    let segments: Vec<Vec<String>> = segments
+        .iter()
+        .filter_map(|s| {
+            let words: Vec<&str> = s.split_whitespace().collect();
+            let skip = words
+                .iter()
+                .take_while(|w| {
                     SHELL_PREFIX.contains(w) || (w.contains('=') && !w.starts_with('-'))
                 })
-                .collect::<Vec<_>>()
-        })
-        // Splitting ignores quoting, so drop pieces of quoted text or redirections.
-        .filter(|s| {
-            s.first().is_some_and(|w| {
-                w.starts_with(|c: char| c.is_ascii_alphabetic() || "/._~".contains(c))
-                    && w.chars()
-                        .all(|c| c.is_ascii_alphanumeric() || "/._~+-:".contains(c))
-            })
+                .count();
+            // `f=$(fd x)` runs `fd`, but its arguments are private: skip the whole segment.
+            if words[..skip]
+                .iter()
+                .any(|w| w.contains("$(") || w.contains('`'))
+            {
+                return None;
+            }
+            let rest: Vec<String> = words[skip..].iter().map(|w| w.to_string()).collect();
+            rest.first().is_some_and(|w| is_program(w)).then_some(rest)
         })
         .collect();
     segments
         .iter()
-        .find(|s| !SHELL_SETUP.contains(&s[0]))
+        .find(|s| !SHELL_SETUP.contains(&s[0].as_str()))
         .or(segments.first())
         .cloned()
         .unwrap_or_default()
@@ -192,9 +276,19 @@ fn main_command(command: &str) -> Vec<&str> {
 /// content. The retry key is the program, or `git push` for subcommand CLIs, so changing
 /// flags is a retry but switching to another subcommand is not.
 fn command_keys(command: &str) -> Option<(String, String)> {
-    let mut words = main_command(command).into_iter();
+    let words = main_command(command);
+    let mut words = words.iter().map(String::as_str);
     let program = words.next()?.rsplit('/').next()?.to_string();
-    let next = words.next();
+    let mut next = words.next();
+    // Global options that take a value (`git -C <path>`, `cargo +nightly`) precede the subcommand.
+    while let Some(w) = next {
+        if program == "git" && ["-C", "-c", "--git-dir", "--work-tree"].contains(&w) {
+            words.next();
+        } else if !w.starts_with('+') {
+            break;
+        }
+        next = words.next();
+    }
     let sub = next.filter(|w| {
         // Only flags, or subcommands of CLIs built around them; plain arguments may be private.
         if !w.starts_with('-') && !SUBCOMMAND_CLIS.contains(&program.as_str()) {
@@ -229,13 +323,42 @@ fn fingerprints(e: &EventEnvelope) -> (String, String) {
 
 /// The program, when this is shell reading or searching in a harness with a tool for it.
 fn read_workaround(e: &EventEnvelope) -> Option<String> {
-    if !HAS_READ_TOOL.contains(&e.source.as_str()) {
+    if !HAS_READ_TOOL.contains(&e.source.as_str()) || CORE_TOOLS.contains(&tool_name(e).as_str()) {
         return None;
     }
-    let (program, _) = command(e).as_deref().and_then(command_keys)?;
-    READ_WORKAROUNDS
-        .contains(&program.as_str())
-        .then_some(program)
+    let command = command(e)?;
+    let words = main_command(&command);
+    // `cat > f`, `sed -i` and `awk … > out` write files; the dedicated tool there is Edit/Write.
+    let (program, _) = command_keys(&command)?;
+    let writes = words.iter().any(|w| {
+        (program == "sed" && (w == "-i" || w.starts_with("-i.")))
+            || (w.starts_with('>') && w != ">/dev/null")
+    });
+    (!writes && READ_WORKAROUNDS.contains(&program.as_str())).then_some(program)
+}
+
+/// `Bash:cargo tset` vs `Bash:cargo test`: same program, subcommands within two edits.
+fn is_typo_of(failed: &str, worked: &str) -> bool {
+    let (Some((fp, fs)), Some((wp, ws))) = (failed.split_once(' '), worked.split_once(' ')) else {
+        return false;
+    };
+    if fp != wp || fs == ws {
+        return false;
+    }
+    let (a, b): (Vec<char>, Vec<char>) = (fs.chars().collect(), ws.chars().collect());
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.iter().enumerate() {
+        let mut prev = row[0];
+        row[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let next = (prev + (ca != cb) as usize)
+                .min(row[j] + 1)
+                .min(row[j + 1] + 1);
+            prev = row[j + 1];
+            row[j + 1] = next;
+        }
+    }
+    row[b.len()] <= 2
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -317,7 +440,9 @@ pub fn debrief(store: &mut Store, sessions: &[String], now_ms: i64) -> Result<De
                         acc.add(e, received);
                     }
                     Outcome::Success => {
-                        if let Some(mut acc) = pending.remove(&coarse) {
+                        let typo = pending.keys().find(|k| is_typo_of(k, &coarse)).cloned();
+                        let found = pending.remove(&coarse).or_else(|| pending.remove(&typo?));
+                        if let Some(mut acc) = found {
                             acc.add(e, received);
                             let seq = sequences.entry(coarse).or_default();
                             seq.count += acc.count;

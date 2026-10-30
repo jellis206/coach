@@ -134,7 +134,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Cmd::Daemon { stop: true } => match Paths::discover() {
-            Ok(p) if daemon::stop(&daemon::socket_path(&p)) => ExitCode::SUCCESS,
+            Ok(p) if daemon::stop(&p) => ExitCode::SUCCESS,
             Ok(_) => {
                 eprintln!(
                     "coach daemon: the running daemon did not stop (a version without --stop?); it exits when its sessions close"
