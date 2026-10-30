@@ -105,6 +105,37 @@ fn failed_invocations_then_success_are_one_sequence() {
 }
 
 #[test]
+fn a_different_subcommand_is_not_the_working_retry() {
+    let mut f = fx();
+    f.add("s1", "tool_failure", 1, failed("git push origin x"));
+    f.add("s1", "tool_result", 2, ok("git status"));
+    assert!(f.run(&["s1"]).findings.is_empty());
+}
+
+#[test]
+fn shell_reading_is_one_finding_per_tool() {
+    let mut f = fx();
+    for (i, c) in [
+        "grep -n a x",
+        "grep -rn a .",
+        "sed -n 1p x",
+        "cat x",
+        "rg -n a",
+    ]
+    .iter()
+    .enumerate()
+    {
+        f.add("s1", "tool_start", i as i64, bash(c));
+    }
+    let d = f.run(&["s1"]);
+    assert_eq!(d.findings.len(), 1, "{:#?}", d.findings);
+    let x = &d.findings[0];
+    assert_eq!(x.fingerprint, "Bash:shell-read");
+    assert_eq!(x.count, 5);
+    assert!(x.title.contains("grep 2"), "{}", x.title);
+}
+
+#[test]
 fn repeated_failures_without_success() {
     let mut f = fx();
     f.add("s1", "tool_failure", 1, failed("cargo tset"));
@@ -194,7 +225,7 @@ fn repeated_invocation_of_the_same_workaround() {
         .iter()
         .find(|x| x.kind == PatternKind::RepeatedInvocation)
         .unwrap();
-    assert_eq!(x.fingerprint, "Bash:sed -n");
+    assert_eq!(x.fingerprint, "Bash:shell-read");
     assert_eq!(x.count, 5);
 }
 
@@ -202,14 +233,160 @@ fn repeated_invocation_of_the_same_workaround() {
 fn fingerprints_never_include_plain_arguments() {
     let mut f = fx();
     for i in 0..5 {
-        f.add("s1", "tool_start", i, bash("cat acmecorp-contract"));
-        f.add("s1", "tool_start", i, bash("FOO=1 git status"));
+        f.add("s1", "approval_request", i, bash("cat acmecorp-contract"));
+        f.add("s1", "approval_request", i, bash("FOO=1 rg -n acmecorp"));
     }
     let d = f.run(&["s1"]);
     let fps: Vec<_> = d.findings.iter().map(|x| x.fingerprint.as_str()).collect();
     assert!(fps.contains(&"Bash:cat"), "{fps:?}");
-    assert!(fps.contains(&"Bash:git status"), "{fps:?}");
+    assert!(fps.contains(&"Bash:rg -n"), "{fps:?}");
     assert!(!render_markdown(&d).contains("acmecorp"));
+}
+
+/// Fingerprint via repeated approvals, which group every program at full detail.
+fn fingerprint_of(command: &str) -> String {
+    let mut f = fx();
+    for i in 0..2 {
+        f.add("s1", "approval_request", i, bash(command));
+    }
+    let d = f.run(&["s1"]);
+    assert_eq!(d.findings.len(), 1, "{command}: {:#?}", d.findings);
+    d.findings[0].fingerprint.clone()
+}
+
+#[test]
+fn fingerprints_name_the_program_past_shell_setup() {
+    for (command, want) in [
+        ("cd /repo && cargo test --quiet", "Bash:cargo test"),
+        ("cd /repo; FOO=1 git status", "Bash:git status"),
+        ("set -euo pipefail\nexport X=1\nrg -n foo", "Bash:rg -n"),
+        ("for f in a b; do wc -l \"$f\"; done", "Bash:wc -l"),
+        ("if true; then sed -n 1p x; fi", "Bash:sed -n"),
+        ("cd /repo", "Bash:cd"),
+    ] {
+        assert_eq!(fingerprint_of(command), want, "{command}");
+    }
+}
+
+#[test]
+fn patches_group_as_one_tool_without_their_content() {
+    let patch = |name: &str| {
+        json!({"raw": {"tool_name": "apply_patch",
+            "tool_input": {"command": format!("*** Begin Patch\n*** Update File: /private/{name}\n acmecorp notes here\n+secret\n*** End Patch")}}})
+    };
+    let mut f = fx();
+    for i in 0..3 {
+        f.add("s1", "approval_request", i, patch(&format!("acmecorp-{i}")));
+    }
+    let d = f.run(&["s1"]);
+    assert_eq!(d.findings.len(), 1, "{:#?}", d.findings);
+    assert_eq!(
+        d.findings[0].fingerprint, "apply_patch",
+        "patch content is not a command"
+    );
+}
+
+#[test]
+fn only_shell_file_reading_is_a_workaround_and_only_beside_a_read_tool() {
+    let mut f = fx();
+    for i in 0..10 {
+        f.add("s1", "tool_start", i, bash("git status"));
+        f.add("s1", "tool_start", i, bash("pnpm test"));
+        f.add_with("s1", "tool_start", i, bash("cat notes.txt"), |e| {
+            e.source = "codex".into()
+        });
+    }
+    assert!(f.run(&["s1"]).findings.is_empty());
+    for i in 0..5 {
+        f.add("s2", "tool_start", i, bash("cat notes.txt"));
+    }
+    let d = f.run(&["s2"]);
+    assert_eq!(d.findings.len(), 1);
+    assert!(
+        d.findings[0].notes[0].contains("dedicated"),
+        "{:?}",
+        d.findings[0].notes
+    );
+}
+
+#[test]
+fn quoted_text_substitutions_heredocs_and_comments_never_become_programs() {
+    for (command, want) in [
+        ("export MSG=\"Summary; acmecorp onboarding\"", "Bash:export"),
+        (
+            "BODY=\"$(cat <<'EOF'\nFixes acmecorp\nEOF\n)\"; gh pr create",
+            "Bash:gh pr",
+        ),
+        ("# build & acmecorp deploy\ncargo test", "Bash:cargo test"),
+        (
+            "cd /r && f=$(fd acmecorp-factory.ts src) && rg -n x \"$f\"",
+            "Bash:rg -n",
+        ),
+        (
+            "cat <<EOF > notes\nacmecorp; plan\nEOF\nwc -l notes",
+            "Bash:cat",
+        ),
+        ("rg -l \"export (const|async acmecorp)\" src", "Bash:rg -l"),
+        ("echo 'unbalanced; acmecorp", "Bash:echo"),
+        ("make deploy-acmecorp", "Bash:make"),
+        ("git -C /r push origin x", "Bash:git push"),
+    ] {
+        let fp = fingerprint_of(command);
+        assert_eq!(fp, want, "{command}");
+    }
+}
+
+#[test]
+fn a_mistyped_subcommand_then_the_right_one_is_a_retry() {
+    let mut f = fx();
+    f.add("s1", "tool_failure", 1, failed("cargo tset"));
+    f.add("s1", "tool_result", 2, ok("cargo test"));
+    let d = f.run(&["s1"]);
+    assert_eq!(d.findings.len(), 1, "{:#?}", d.findings);
+    assert_eq!(d.findings[0].kind, PatternKind::FailureThenSuccess);
+    assert_eq!(d.findings[0].fingerprint, "Bash:cargo test");
+}
+
+#[test]
+fn shell_writes_are_not_shell_reads() {
+    let mut f = fx();
+    for i in 0..5 {
+        f.add("s1", "tool_start", i, bash("cat > notes.txt"));
+        f.add("s1", "tool_start", i, bash("sed -i s/a/b/ notes.txt"));
+    }
+    assert!(f.run(&["s1"]).findings.is_empty());
+}
+
+#[test]
+fn quoted_separators_do_not_make_programs() {
+    assert_eq!(
+        fingerprint_of("cd /x\n\"select a\" | -S b 2>&1\nrg -n y"),
+        "Bash:rg -n"
+    );
+}
+
+#[test]
+fn core_tools_are_not_repeated_workarounds() {
+    let mut f = fx();
+    for tool in [
+        "Edit",
+        "Read",
+        "Write",
+        "Grep",
+        "Glob",
+        "Agent",
+        "apply_patch",
+    ] {
+        for i in 0..10 {
+            f.add(
+                "s1",
+                "tool_start",
+                i,
+                json!({"raw": {"tool_name": tool, "tool_input": {"command": "cat notes.txt"}}}),
+            );
+        }
+    }
+    assert!(f.run(&["s1"]).findings.is_empty());
 }
 
 #[test]

@@ -5,7 +5,7 @@ description: Wrap-up review of this session's recorded agent friction with Coach
 
 # Coach debrief
 
-Coach records friction locally while you work: failed tool calls and the retries that found the working usage, repeated approval requests, repeated workarounds, measured UI waits. At **wrap-up** you and the user review that evidence together and decide on durable improvements. Wrap-up means preparing to merge, an approved PR, or the user asking. An ordinary idle turn or a Stop is not wrap-up.
+Coach records friction locally while you work: failed tool calls and the retries that found the working usage, repeated approval requests, shell reads that bypass a dedicated read or search tool, measured UI waits. At **wrap-up** you and the user review that evidence together and decide on durable improvements. Wrap-up means preparing to merge, an approved PR, or the user asking. An ordinary idle turn or a Stop is not wrap-up.
 
 ## Steps
 

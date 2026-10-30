@@ -1,6 +1,6 @@
 # Coach
 
-Coach is a private observer for Claude Code, Codex and Pi. It runs on your workstation and records where an agent struggled: failed commands and the retry that worked, repeated approval prompts, repeated workarounds and measured waits. When you wrap up a piece of work, you and the agent review that evidence in a **debrief** and decide on durable fixes, such as a skill, a hook or an instruction.
+Coach is a private observer for Claude Code, Codex and Pi. It runs on your workstation and records where an agent struggled: failed commands and the retry that worked, repeated approval prompts, shell reads that bypass a dedicated read or search tool, and measured waits. When you wrap up a piece of work, you and the agent review that evidence in a **debrief** and decide on durable fixes, such as a skill, a hook or an instruction.
 
 - Evidence stays on the machine, in a private SQLite database outside every Git repository. Coach sends no telemetry. See [docs/privacy.md](docs/privacy.md).
 - Hooks fail open. A Coach problem never blocks, slows down or changes a tool call, prompt or approval.
@@ -82,7 +82,7 @@ These variables are inherited by everything the child starts. A launcher should 
 - **Debrief:** `coach debrief --session <id>` shows the findings, and `coach finding accept|dismiss <finding-id> [--reference <where the fix lives>]` records your decision on each. The skill walks through this at wrap-up, meaning before a merge or after an approved review, never on an idle turn.
 - **Other commands:** `coach sessions` lists recorded sessions, `coach evidence <event-id>` prints one event in full (private content), and `coach export --session <id> --output <file>` writes a private JSONL file outside Git.
 - **Retention:** detailed evidence older than 30 days is pruned automatically when the daemon starts. To delete sooner, run `coach purge --before YYYY-MM-DD --yes`.
-- **Update:** pull, run `cargo install --locked --path .` again, then re-run the configurator so the Pi extension copy matches the binary. The configurator is idempotent. If the binary moved or Coach's hook settings changed, it rewrites its own hooks in place, and Codex then asks you to re-trust them.
+- **Update:** pull, run `cargo install --locked --path .` again, then re-run the configurator so the Pi extension copy matches the binary. The configurator is idempotent. If the binary moved or Coach's hook settings changed, it rewrites its own hooks in place, and Codex then asks you to re-trust them. A running daemon keeps the old binary until its sessions close; `coach daemon --stop` drains and stops it now, and the next hook starts the new one.
 - **Remove:** run `python3 scripts/configure.py remove --harness all`. This deletes only Coach-owned entries and the Coach Pi extension. Evidence stays until you purge it or delete the state directory reported by `coach doctor`.
 
 ### Coverage limits

@@ -26,7 +26,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Cmd {
     /// Run the on-demand daemon (normally started by hooks).
-    Daemon,
+    Daemon {
+        /// Stop the running daemon cleanly, e.g. after an upgrade; hooks start a new one.
+        #[arg(long)]
+        stop: bool,
+    },
     /// Forward one hook payload from stdin. Always exits 0 with no output.
     Hook { harness: Harness },
     /// Report registration and health without printing captured content.
@@ -129,7 +133,20 @@ fn main() -> ExitCode {
             hook(harness);
             ExitCode::SUCCESS
         }
-        Cmd::Daemon => match Paths::discover()
+        Cmd::Daemon { stop: true } => match Paths::discover() {
+            Ok(p) if daemon::stop(&p) => ExitCode::SUCCESS,
+            Ok(_) => {
+                eprintln!(
+                    "coach daemon: the running daemon did not stop (a version without --stop?); it exits when its sessions close"
+                );
+                ExitCode::FAILURE
+            }
+            Err(e) => {
+                eprintln!("coach daemon: {e}");
+                ExitCode::FAILURE
+            }
+        },
+        Cmd::Daemon { stop: false } => match Paths::discover()
             .map_err(Into::into)
             .and_then(|p| daemon::run(&p))
         {
@@ -228,7 +245,9 @@ fn run(cmd: Cmd) -> BoxResult<()> {
             )?;
             println!("recorded {kind:?} for {finding_id}");
         }
-        Cmd::Hook { .. } | Cmd::Daemon | Cmd::Doctor { .. } => unreachable!("handled in main"),
+        Cmd::Hook { .. } | Cmd::Daemon { .. } | Cmd::Doctor { .. } => {
+            unreachable!("handled in main")
+        }
     }
     Ok(())
 }
